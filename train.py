@@ -335,7 +335,7 @@ def train_and_evaluate(
                 )
 
             if global_step % hps.train.eval_interval == 0:
-                evaluate(hps, net_g, eval_loader, writer_eval)
+                evaluate(hps, net_g, net_d, eval_loader, writer_eval, epoch, logger)
                 utils.save_checkpoint(
                     net_g,
                     optim_g,
@@ -356,8 +356,9 @@ def train_and_evaluate(
         logger.info("====> Epoch: {}".format(epoch))
 
 
-def evaluate(hps, generator, eval_loader, writer_eval):
+def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, logger):
     generator.eval()
+
     with torch.no_grad():
         for batch_idx, (
             phone,
@@ -379,22 +380,15 @@ def evaluate(hps, generator, eval_loader, writer_eval):
             spec, spec_lengths = spec.cuda(0), spec_lengths.cuda(0)
             wave, wave_lengths = wave.cuda(0), wave_lengths.cuda(0)
 
-            # remove else
-            phone = phone[:1]
-            phone_lengths = phone_lengths[:1]
-            score = score[:1]
-            pitch = pitch[:1]
-            slurs = slurs[:1]
+            (
+                y_hat,
+                ids_slice,
+                x_mask,
+                z_mask,
+                (z, z_p, m_p, logs_p, m_q, logs_q),
+            ) = generator(phone, phone_lengths, score, pitch, slurs, spec, spec_lengths)
 
-            spec = spec[:1]
-            spec_lengths = spec_lengths[:1]
-            wave = wave[:1]
-            wave_lengths = wave_lengths[:1]
-            break
-        y_hat, mask, *_ = generator.module.infer(
-            phone, phone_lengths, score, pitch, slurs, sid=None, max_len=1000
-        )
-        y_hat_lengths = mask.sum([1, 2]).long() * hps.data.hop_length
+        y_hat_lengths = x_mask.sum([1, 2]).long() * hps.data.hop_length
 
         mel = spec_to_mel_torch(
             spec,
@@ -404,8 +398,11 @@ def evaluate(hps, generator, eval_loader, writer_eval):
             hps.data.mel_fmin,
             hps.data.mel_fmax,
         )
+        y_mel = commons.slice_segments(
+            mel, ids_slice, hps.train.segment_size // hps.data.hop_length
+        )
         y_hat_mel = mel_spectrogram_torch(
-            y_hat.squeeze(1).float(),
+            y_hat.squeeze(1),
             hps.data.filter_length,
             hps.data.n_mel_channels,
             hps.data.sampling_rate,
@@ -414,6 +411,73 @@ def evaluate(hps, generator, eval_loader, writer_eval):
             hps.data.mel_fmin,
             hps.data.mel_fmax,
         )
+
+        wave = commons.slice_segments(
+            wave, ids_slice * hps.data.hop_length, hps.train.segment_size
+        )  # slice
+
+        # # remove else
+        # phone = phone[:1]
+        # phone_lengths = phone_lengths[:1]
+        # score = score[:1]
+        # pitch = pitch[:1]
+        # slurs = slurs[:1]
+
+        # spec = spec[:1]
+        # spec_lengths = spec_lengths[:1]
+
+        # wave = wave[:1]
+        # wave_lengths = wave_lengths[:1]
+
+        # Discriminator
+        y_d_hat_r, y_d_hat_g, _, _ = discriminator(wave, y_hat.detach())
+        with autocast(enabled=False):
+            loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
+                y_d_hat_r, y_d_hat_g
+            )
+            loss_disc_all = loss_disc
+
+        with autocast(enabled=hps.train.fp16_run):
+            # Generator
+            y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = discriminator(wave, y_hat)
+            with autocast(enabled=False):
+                loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
+                loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
+                loss_fm = feature_loss(fmap_r, fmap_g)
+                loss_gen, losses_gen = generator_loss(y_d_hat_g)
+                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl
+
+                losses = [loss_disc, loss_gen, loss_fm, loss_mel]
+                logger.info("Eval Epoch: {}".format(epoch))
+                # Amor For Tensorboard display
+                if loss_mel > 50:
+                    loss_mel = 50
+                if loss_kl > 5:
+                    loss_kl = 5
+
+                logger.info(
+                    f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f}"
+                )
+                logger.info(f"loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}")
+
+                scalar_dict = {
+                    "loss/g/total": loss_gen_all,
+                    "loss/d/total": loss_disc_all,
+                }
+                scalar_dict.update(
+                    {"loss/g/fm": loss_fm, "loss/g/mel": loss_mel, "loss/g/kl": loss_kl}
+                )
+
+                scalar_dict.update(
+                    {"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)}
+                )
+                scalar_dict.update(
+                    {"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)}
+                )
+                scalar_dict.update(
+                    {"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g)}
+                )
+
     image_dict = {
         f"gen/mel_{global_step}": utils.plot_spectrogram_to_numpy(
             y_hat_mel[0].cpu().numpy()
@@ -422,7 +486,7 @@ def evaluate(hps, generator, eval_loader, writer_eval):
     audio_dict = {f"gen/audio_{global_step}": y_hat[0, :, : y_hat_lengths[0]]}
     if global_step == 0:
         image_dict.update(
-            {"gt/mel": utils.plot_spectrogram_to_numpy(mel[0].cpu().numpy())}
+            {"gt/mel": utils.plot_spectrogram_to_numpy(y_mel[0].cpu().numpy())}
         )
         audio_dict.update({"gt/audio": wave[0, :, : wave_lengths[0]]})
 
@@ -432,6 +496,7 @@ def evaluate(hps, generator, eval_loader, writer_eval):
         images=image_dict,
         audios=audio_dict,
         audio_sampling_rate=hps.data.sampling_rate,
+        scalars=scalar_dict,
     )
     generator.train()
 
