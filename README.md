@@ -10,33 +10,47 @@ https://github.com/MoonInTheRiver/DiffSinger
 https://wenet.org.cn/opencpop/
 
 # 数据预处理
+```bash
 export PYTHONPATH=.
+```
 
+```bash
 python prepare/data_vits.py
+```
 
-      生成文件../VISinger_data/label_vits/XXX._label.npy|XXX_score.npy|XXX_pitch.npy|XXX_slurs.npy
+生成文件 ../VISinger_data/label_vits/XXX._label.npy|XXX_score.npy|XXX_pitch.npy|XXX_slurs.npy
 
-      生成文件filelists/vits_file.txt; 内容格式：wave path|label path|score path|pitch path|slurs path;
+生成文件 filelists/vits_file.txt; 内容格式：wave path|label path|score path|pitch path|slurs path;
 
+```bash
 python prepare/preprocess.py
+```
 
 # VITS训练
 
+```bash
 python train.py -c configs/singing_base.json -m singing_base
+```
 
 # 测试验证
 
 1,训练集生成验证:F0根据音频提取
 
+```bash
 python vsinging_debug.py
+```
 
 2,推理验证:F0根据规则生成
 
+```bash
 python vsinging_infer.py
+```
 
 3,完整歌曲合成（**使用release模型**）
 
-pyton vsinging_song.py
+```bash
+python vsinging_song.py
+```
 
 4,F0的问题可以额外训练F0预测器,或者使用UTAU绘制pit曲线
 
