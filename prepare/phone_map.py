@@ -76,3 +76,6 @@ def label_to_ids(phones):
     # use lower letter
     sequence = [_symbol_to_id[symbol.lower()] for symbol in phones]
     return sequence
+
+def get_vocab_size():
+    return len(symbols)

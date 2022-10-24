@@ -22,7 +22,7 @@ from models import (
 )
 from losses import generator_loss, discriminator_loss, feature_loss, kl_loss
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
-
+from prepare.phone_map import get_vocab_size
 
 torch.backends.cudnn.benchmark = True
 global_step = 0
@@ -93,8 +93,9 @@ def run(rank, n_gpus, hps):
             drop_last=False,
             collate_fn=collate_fn,
         )
-
+    vocab_size = get_vocab_size()
     net_g = SynthesizerTrn(
+        vocab_size,
         hps.data.filter_length // 2 + 1,
         hps.train.segment_size // hps.data.hop_length,
         **hps.model,
@@ -112,10 +113,10 @@ def run(rank, n_gpus, hps):
         betas=hps.train.betas,
         eps=hps.train.eps,
     )
-    # net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
-    # net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
-    net_g = DDP(net_g, device_ids=[rank])
-    net_d = DDP(net_d, device_ids=[rank])
+    net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
+    net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
+    # net_g = DDP(net_g, device_ids=[rank])
+    # net_d = DDP(net_d, device_ids=[rank])
 
     try:
         _, _, _, epoch_str = utils.load_checkpoint(
@@ -187,8 +188,9 @@ def train_and_evaluate(
     for batch_idx, (
         phone,
         phone_lengths,
+        phone_dur,
         score,
-        pitch,
+        score_dur,
         slurs,
         spec,
         spec_lengths,
@@ -199,8 +201,9 @@ def train_and_evaluate(
         phone, phone_lengths = phone.cuda(rank, non_blocking=True), phone_lengths.cuda(
             rank, non_blocking=True
         )
+        phone_dur = phone_dur.cuda(rank, non_blocking=True)
         score = score.cuda(rank, non_blocking=True)
-        pitch = pitch.cuda(rank, non_blocking=True)
+        score_dur = score_dur.cuda(rank, non_blocking=True)
         slurs = slurs.cuda(rank, non_blocking=True)
 
         spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(
@@ -217,7 +220,19 @@ def train_and_evaluate(
                 x_mask,
                 z_mask,
                 (z, z_p, m_p, logs_p, m_q, logs_q),
-            ) = net_g(phone, phone_lengths, score, pitch, slurs, spec, spec_lengths)
+                dur_l,
+                pitch_l,
+                ctc_loss,
+            ) = net_g(
+                phone,
+                phone_lengths,
+                phone_dur,
+                score,
+                score_dur,
+                slurs,
+                spec,
+                spec_lengths,
+            )
 
             mel = spec_to_mel_torch(
                 spec,
@@ -267,7 +282,17 @@ def train_and_evaluate(
 
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl
+                loss_dur = torch.sum(dur_l.float())
+                loss_pitch = torch.sum(pitch_l.float())
+                loss_gen_all = (
+                    loss_gen
+                    + loss_fm
+                    + loss_mel
+                    + loss_kl
+                    + loss_dur
+                    + loss_pitch
+                    + ctc_loss
+                )
         optim_g.zero_grad()
         scaler.scale(loss_gen_all).backward()
         scaler.unscale_(optim_g)
@@ -278,7 +303,15 @@ def train_and_evaluate(
         if rank == 0:
             if global_step % hps.train.log_interval == 0:
                 lr = optim_g.param_groups[0]["lr"]
-                losses = [loss_disc, loss_gen, loss_fm, loss_mel, loss_kl]
+                losses = [
+                    loss_disc,
+                    loss_gen,
+                    loss_fm,
+                    loss_mel,
+                    loss_dur,
+                    loss_pitch,
+                    ctc_loss,
+                ]
                 logger.info(
                     "Train Epoch: {} [{:.0f}%]".format(
                         epoch, 100.0 * batch_idx / len(train_loader)
@@ -289,12 +322,16 @@ def train_and_evaluate(
                     loss_mel = 50
                 if loss_kl > 5:
                     loss_kl = 5
+                if loss_dur > 100:
+                    loss_dur = 100
 
                 logger.info([global_step, lr])
                 logger.info(
                     f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f}"
                 )
-                logger.info(f"loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}")
+                logger.info(
+                    f"loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}, loss_dur={loss_dur:.3f}, loss_pitch={loss_pitch:.3f}, ctc_loss={ctc_loss:.3f}"
+                )
 
                 scalar_dict = {
                     "loss/g/total": loss_gen_all,
@@ -304,7 +341,14 @@ def train_and_evaluate(
                     "grad_norm_g": grad_norm_g,
                 }
                 scalar_dict.update(
-                    {"loss/g/fm": loss_fm, "loss/g/mel": loss_mel, "loss/g/kl": loss_kl}
+                    {
+                        "loss/g/fm": loss_fm,
+                        "loss/g/mel": loss_mel,
+                        "loss/g/kl": loss_kl,
+                        "loss/g/dur": loss_dur,
+                        "loss/g/pitch": loss_pitch,
+                        "loss/g/ctc": ctc_loss,
+                    }
                 )
 
                 scalar_dict.update(
@@ -363,8 +407,9 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
         for batch_idx, (
             phone,
             phone_lengths,
+            phone_dur,
             score,
-            pitch,
+            score_dur,
             slurs,
             spec,
             spec_lengths,
@@ -373,8 +418,9 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
         ) in enumerate(eval_loader):
             #
             phone, phone_lengths = phone.cuda(0), phone_lengths.cuda(0)
+            phone_dur = phone_dur.cuda(0)
             score = score.cuda(0)
-            pitch = pitch.cuda(0)
+            score_dur = score_dur.cuda(0)
             slurs = slurs.cuda(0)
 
             spec, spec_lengths = spec.cuda(0), spec_lengths.cuda(0)
@@ -386,7 +432,19 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                 x_mask,
                 z_mask,
                 (z, z_p, m_p, logs_p, m_q, logs_q),
-            ) = generator(phone, phone_lengths, score, pitch, slurs, spec, spec_lengths)
+                dur_l,
+                pitch_l,
+                ctc_loss,
+            ) = generator(
+                phone,
+                phone_lengths,
+                phone_dur,
+                score,
+                score_dur,
+                slurs,
+                spec,
+                spec_lengths,
+            )
 
         y_hat_lengths = x_mask.sum([1, 2]).long() * hps.data.hop_length
 
@@ -445,9 +503,27 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                 loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl
+                loss_dur = torch.sum(dur_l.float())
+                loss_pitch = torch.sum(pitch_l.float())
+                loss_gen_all = (
+                    loss_gen
+                    + loss_fm
+                    + loss_mel
+                    + loss_kl
+                    + loss_dur
+                    + loss_pitch
+                    + ctc_loss
+                )
 
-                losses = [loss_disc, loss_gen, loss_fm, loss_mel]
+                losses = [
+                    loss_disc,
+                    loss_gen,
+                    loss_fm,
+                    loss_mel,
+                    loss_dur,
+                    loss_pitch,
+                    ctc_loss,
+                ]
                 logger.info("Eval Epoch: {}".format(epoch))
                 # Amor For Tensorboard display
                 if loss_mel > 50:
@@ -458,14 +534,23 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                 logger.info(
                     f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f}"
                 )
-                logger.info(f"loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}")
+                logger.info(
+                    f"loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}, loss_dur={loss_dur:.3f}, loss_pitch={loss_pitch:.3f}, ctc_loss={ctc_loss:.3f}"
+                )
 
                 scalar_dict = {
                     "loss/g/total": loss_gen_all,
                     "loss/d/total": loss_disc_all,
                 }
                 scalar_dict.update(
-                    {"loss/g/fm": loss_fm, "loss/g/mel": loss_mel, "loss/g/kl": loss_kl}
+                    {
+                        "loss/g/fm": loss_fm,
+                        "loss/g/mel": loss_mel,
+                        "loss/g/kl": loss_kl,
+                        "loss/g/dur": loss_dur,
+                        "loss/g/pitch": loss_pitch,
+                        "loss/g/ctc": ctc_loss,
+                    }
                 )
 
                 scalar_dict.update(

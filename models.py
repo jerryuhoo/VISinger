@@ -19,7 +19,7 @@ class DurationPredictor(nn.Module):
     ):
         super().__init__()
 
-        self.in_channels = in_channels
+        self.in_channels = in_channels + 1
         self.filter_channels = filter_channels
         self.kernel_size = kernel_size
         self.p_dropout = p_dropout
@@ -27,7 +27,7 @@ class DurationPredictor(nn.Module):
 
         self.drop = nn.Dropout(p_dropout)
         self.conv_1 = nn.Conv1d(
-            in_channels, filter_channels, kernel_size, padding=kernel_size // 2
+            in_channels + 1, filter_channels, kernel_size, padding=kernel_size // 2
         )
         self.norm_1 = modules.LayerNorm(filter_channels)
         self.conv_2 = nn.Conv1d(
@@ -39,8 +39,11 @@ class DurationPredictor(nn.Module):
         if gin_channels != 0:
             self.cond = nn.Conv1d(gin_channels, in_channels, 1)
 
-    def forward(self, x, x_mask, g=None):
+    def forward(self, x, x_mask, score_dur, g=None):
         x = torch.detach(x)
+        score_dur = torch.detach(score_dur)
+        score_dur = score_dur.unsqueeze(1)
+        x = torch.cat((x, score_dur), 1)
         if g is not None:
             g = torch.detach(g)
             x = x + self.cond(g)
@@ -132,6 +135,7 @@ class SinusoidalPositionalEmbedding(nn.Module):
 class TextEncoder(nn.Module):
     def __init__(
         self,
+        n_vocab,
         out_channels,
         hidden_channels,
         filter_channels,
@@ -149,13 +153,13 @@ class TextEncoder(nn.Module):
         self.kernel_size = kernel_size
         self.p_dropout = p_dropout
 
-        self.emb_phone = nn.Embedding(63, hidden_channels)  # phone lables
+        self.emb_phone = nn.Embedding(n_vocab, hidden_channels)  # phone lables
         self.emb_score = nn.Embedding(128, hidden_channels)  # pitch notes
-        self.emb_pitch = nn.Embedding(256, hidden_channels)  # pitch 256
+        self.emb_score_dur = nn.Embedding(512, hidden_channels)  # pitch 256
         self.emb_slurs = nn.Embedding(2, hidden_channels)  # phone slur
         nn.init.normal_(self.emb_phone.weight, 0.0, hidden_channels**-0.5)
         nn.init.normal_(self.emb_score.weight, 0.0, hidden_channels**-0.5)
-        nn.init.normal_(self.emb_pitch.weight, 0.0, hidden_channels**-0.5)
+        nn.init.normal_(self.emb_score_dur.weight, 0.0, hidden_channels**-0.5)
         nn.init.normal_(self.emb_slurs.weight, 0.0, hidden_channels**-0.5)
 
         self.encoder = attentions.Encoder(
@@ -171,14 +175,24 @@ class TextEncoder(nn.Module):
         self.drop = nn.Dropout(p_dropout)
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-    def forward(self, phone, score, pitch, slurs, lengths):
+    def forward(self, phone, score, score_dur, slurs, lengths):
         x = self.emb_phone(phone)
-        x = x + self.emb_score(score) + self.emb_pitch(pitch) + self.emb_slurs(slurs)
+
+        x = x + self.emb_score(score)
+        x = x + self.emb_score_dur(score_dur)
+        x = x + self.emb_slurs(slurs)
+
         x = x * math.sqrt(self.hidden_channels)  # [b, t, h]
         x = torch.transpose(x, 1, -1)  # [b, h, t]
         x_mask = torch.unsqueeze(commons.sequence_mask(lengths, x.size(2)), 1).to(
             x.dtype
         )
+        # print("phone", phone)
+        # print("score", score)
+        # print("score_dur", score_dur)
+        # print("slurs", slurs)
+        # print("lengths", lengths)
+
         x = self.encoder(x * x_mask, x_mask)
 
         batch_size = x.shape[0]
@@ -503,6 +517,241 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
+class Projection(nn.Module):
+    def __init__(self, hidden_channels, out_channels):
+        super().__init__()
+        self.hidden_channels = hidden_channels
+        self.out_channels = out_channels
+        self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
+
+    def forward(self, x, x_mask):
+        stats = self.proj(x) * x_mask
+        m_p, logs_p = torch.split(stats, self.out_channels, dim=1)
+        return m_p, logs_p
+
+
+class ResidualConnectionModule(nn.Module):
+    """
+    Residual Connection Module.
+    outputs = (module(inputs) x module_factor + inputs x input_factor)
+    """
+
+    def __init__(
+        self, module: nn.Module, module_factor: float = 1.0, input_factor: float = 1.0
+    ):
+        super(ResidualConnectionModule, self).__init__()
+        self.module = module
+        self.module_factor = module_factor
+        self.input_factor = input_factor
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return (self.module(inputs) * self.module_factor) + (inputs * self.input_factor)
+
+
+class FramePriorBlock(nn.Module):
+    def __init__(
+        self, in_channels, filter_channels, kernel_size, p_dropout, gin_channels=0
+    ):
+        super().__init__()
+        self.in_channels = in_channels
+        self.filter_channels = filter_channels
+        self.kernel_size = kernel_size
+        self.p_dropout = p_dropout
+        self.gin_channels = gin_channels
+
+        self.sequential = nn.Sequential(
+            ResidualConnectionModule(
+                module=nn.Conv1d(
+                    in_channels, filter_channels, kernel_size, padding=kernel_size // 2
+                )
+            ),
+            nn.ReLU(),
+            modules.LayerNorm(filter_channels),
+            nn.Dropout(p_dropout),
+        )
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return self.sequential(inputs)
+
+
+class LengthRegulator(torch.nn.Module):
+    """Length Regulator"""
+
+    def __init__(self, pad_value=0.0):
+        """Initilize length regulator module.
+        Args:
+            pad_value (float, optional): Value used for padding.
+        """
+        super().__init__()
+        self.pad_value = pad_value
+        self.winlen = 1024
+        self.hoplen = 256
+        self.sr = 16000
+
+    def pad_list(xs, pad_value):
+        """Perform padding for the list of tensors.
+
+        Args:
+            xs (List): List of Tensors [(T_1, `*`), (T_2, `*`), ..., (T_B, `*`)].
+            pad_value (float): Value for padding.
+
+        Returns:
+            Tensor: Padded tensor (B, Tmax, `*`).
+
+        Examples:
+            >>> x = [torch.ones(4), torch.ones(2), torch.ones(1)]
+            >>> x
+            [tensor([1., 1., 1., 1.]), tensor([1., 1.]), tensor([1.])]
+            >>> pad_list(x, 0)
+            tensor([[1., 1., 1., 1.],
+                    [1., 1., 0., 0.],
+                    [1., 0., 0., 0.]])
+
+        """
+        n_batch = len(xs)
+        max_len = max(x.size(0) for x in xs)
+        pad = xs[0].new(n_batch, max_len, *xs[0].size()[1:]).fill_(pad_value)
+
+        for i in range(n_batch):
+            pad[i, : xs[i].size(0)] = xs[i]
+
+        return pad
+
+    def forward(self, xs, notepitch, ds, x_lengths):
+        if ds.sum() == 0:
+            ds[ds.sum(dim=1).eq(0)] = 1
+
+        # expand xs
+        xs = torch.transpose(xs, 1, 2)
+        # print("ds", ds)
+        phn_repeat = [torch.repeat_interleave(x, d, dim=0) for x, d in zip(xs, ds)]
+        output = self.pad_list(phn_repeat, self.pad_value)  # (B, D_frame, dim)
+        output = torch.transpose(output, 1, 2)
+
+        # expand pitch
+        notepitch = torch.detach(notepitch)
+        pitch_repeat = [
+            torch.repeat_interleave(n, d, dim=0) for n, d in zip(notepitch, ds)
+        ]
+        frame_pitch = self.pad_list(pitch_repeat, self.pad_value)  # (B, D_frame)
+
+        x_lengths = torch.LongTensor([len(i) for i in pitch_repeat]).to(
+            frame_pitch.device
+        )
+
+        return output, frame_pitch, x_lengths
+
+
+class PitchPredictor(nn.Module):
+    def __init__(
+        self,
+        n_vocab,
+        out_channels,
+        hidden_channels,
+        filter_channels,
+        n_heads,
+        n_layers,
+        kernel_size,
+        p_dropout,
+    ):
+        super().__init__()
+        self.n_vocab = n_vocab  # 音素的个数，中文和英文不同
+        self.out_channels = out_channels
+        self.hidden_channels = hidden_channels
+        self.filter_channels = filter_channels
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        self.kernel_size = kernel_size
+        self.p_dropout = p_dropout
+
+        self.emb = nn.Embedding(121, hidden_channels)
+
+        self.pitch_net = attentions.Encoder(
+            hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout
+        )
+        self.proj = nn.Conv1d(hidden_channels, 1, 1)
+
+    def forward(self, x, x_mask):
+        pitch_embedding = self.pitch_net(x * x_mask, x_mask)
+        pitch_embedding = pitch_embedding * x_mask
+        pred_pitch = self.proj(pitch_embedding)
+        return pred_pitch, pitch_embedding
+
+
+class PhonemesPredictor(nn.Module):
+    def __init__(
+        self,
+        n_vocab,
+        out_channels,
+        hidden_channels,
+        filter_channels,
+        n_heads,
+        n_layers,
+        kernel_size,
+        p_dropout,
+    ):
+        super().__init__()
+        self.n_vocab = n_vocab
+        self.out_channels = out_channels
+        self.hidden_channels = hidden_channels
+        self.filter_channels = filter_channels
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        self.kernel_size = kernel_size
+        self.p_dropout = p_dropout
+
+        self.emb = nn.Embedding(n_vocab, hidden_channels)
+
+        self.phonemes_predictor = attentions.Encoder(
+            hidden_channels, filter_channels, n_heads, 2, kernel_size, p_dropout
+        )
+        self.linear1 = nn.Linear(hidden_channels, n_vocab)
+
+    def forward(self, x, x_mask):
+        phonemes_embedding = self.phonemes_predictor(x * x_mask, x_mask)
+        # print("x_size:", x.size())
+        x1 = self.linear1(phonemes_embedding.transpose(1, 2))
+        x1 = x1.log_softmax(2)
+        # print("phonemes_embedding size:", x1.size())
+        return x1.transpose(0, 1)
+
+
+class FramePriorNet(nn.Module):
+    def __init__(
+        self,
+        n_vocab,
+        out_channels,
+        hidden_channels,
+        filter_channels,
+        n_heads,
+        n_layers,
+        kernel_size,
+        p_dropout,
+    ):
+        super().__init__()
+
+        self.n_vocab = n_vocab
+        self.out_channels = out_channels
+        self.hidden_channels = hidden_channels
+        self.filter_channels = filter_channels
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        self.kernel_size = kernel_size
+        self.p_dropout = p_dropout
+
+        self.emb = nn.Embedding(121, hidden_channels)
+
+        self.fft_block = attentions.Encoder(
+            hidden_channels, filter_channels, n_heads, 4, kernel_size, p_dropout
+        )
+
+    def forward(self, x_frame, pitch_embedding, x_mask):
+        x = x_frame + pitch_embedding
+        x = self.fft_block(x * x_mask, x_mask)
+        x = x.transpose(1, 2)
+        return x
+
+
 class SynthesizerTrn(nn.Module):
     """
     Synthesizer for Training
@@ -510,6 +759,7 @@ class SynthesizerTrn(nn.Module):
 
     def __init__(
         self,
+        n_vocab,
         spec_channels,
         segment_size,
         inter_channels,
@@ -553,6 +803,7 @@ class SynthesizerTrn(nn.Module):
         self.use_sdp = use_sdp
 
         self.enc_p = TextEncoder(
+            n_vocab,
             inter_channels,
             hidden_channels,
             filter_channels,
@@ -584,29 +835,144 @@ class SynthesizerTrn(nn.Module):
             inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels
         )
 
+        self.dp = DurationPredictor(
+            hidden_channels, 256, 3, 0.5, gin_channels=gin_channels
+        )
+        self.project = Projection(hidden_channels, inter_channels)
+        self.lr = LengthRegulator()
+        self.frame_prior_net = FramePriorNet(
+            n_vocab,
+            inter_channels,
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout,
+        )
+        self.pitch_net = PitchPredictor(
+            n_vocab,
+            inter_channels,
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout,
+        )
+        self.phonemes_predictor = PhonemesPredictor(
+            n_vocab,
+            inter_channels,
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout,
+        )
+        self.ctc_loss = nn.CTCLoss(n_vocab - 1, reduction="mean")
+
         if n_speakers > 1:
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
 
     def forward(
-        self, phone, phone_lengths, score, pitch, slurs, y, y_lengths, sid=None
+        self,
+        phone,
+        phone_lengths,
+        phone_dur,
+        score,
+        score_dur,
+        slurs,
+        y,
+        y_lengths,
+        sid=None,
     ):
-        x, m_p, logs_p, x_mask = self.enc_p(phone, score, pitch, slurs, phone_lengths)
+        x, m_p, logs_p, x_mask = self.enc_p(
+            phone, score, score_dur, slurs, phone_lengths
+        )
         if self.n_speakers > 0:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         else:
             g = None
 
+        # duration
+        w = phone_dur.unsqueeze(1)
+        logw_ = w * x_mask
+        logw = self.dp(x, x_mask, score_dur, g=g)
+        logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
+        l_loss = torch.sum((logw - logw_) ** 2, [1, 2])
+        x_mask_sum = torch.sum(x_mask)
+        dur_l = l_loss / x_mask_sum
+        x_frame, frame_pitch, x_lengths = self.lr(x, score, phone_dur, phone_lengths)
+
+        x_frame = x_frame.to(x.device)
+        x_mask = torch.unsqueeze(
+            commons.sequence_mask(x_lengths, x_frame.size(2)), 1
+        ).to(
+            x.dtype
+        )  # 更新x_mask矩阵
+        x_mask = x_mask.to(x.device)
+        max_len = x_frame.size(2)
+        d_model = x_frame.size(1)
+        batch_size = x_frame.size(0)
+        pe = torch.zeros(batch_size, max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2) * -(math.log(10000.0) / d_model)
+        )
+        pe[:, :, 0::2] = torch.sin(position * div_term)
+        pe[:, :, 1::2] = torch.cos(position * div_term)
+        pe = pe.transpose(1, 2).to(x_frame.device)
+        x_frame = x_frame + pe
+
+        pred_pitch, pitch_embedding = self.pitch_net(x_frame, x_mask)
+        lf0 = torch.unsqueeze(pred_pitch, -1)
+        gt_lf0 = torch.log(440 * (2 ** ((frame_pitch - 69) / 12)))
+        gt_lf0 = gt_lf0.to(x.device)
+        x_mask_sum = torch.sum(x_mask)
+        lf0 = lf0.squeeze()
+        pitch_l = torch.sum((gt_lf0 - lf0) ** 2, 1) / x_mask_sum
+        frame_pitch = frame_pitch + 1e-6
+        frame_pitch = torch.log(frame_pitch)
+        frame_pitch = torch.unsqueeze(frame_pitch, -1)
+        frame_pitch = frame_pitch.to(x.device)
+        x_frame = self.frame_prior_net(x_frame, pitch_embedding, x_mask)
+        x_frame = x_frame.transpose(1, 2)
+
+        m_p, logs_p = self.project(x_frame, x_mask)
+
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
+
+        log_probs = self.phonemes_predictor(z, y_mask)
+        # print("log_probs", log_probs.shape)
+        # print("phone", phone.shape)
+        # print("y_lengths", y_lengths)
+        # print("phone_lengths", phone_lengths)
+        ctc_loss = self.ctc_loss(log_probs, phone, y_lengths, phone_lengths)
+
         z_p = self.flow(z, y_mask, g=g)
 
         z_slice, ids_slice = commons.rand_slice_segments(
             z, y_lengths, self.segment_size
         )
         o = self.dec(z_slice, g=g)
-        return o, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
+        return (
+            o,
+            ids_slice,
+            x_mask,
+            y_mask,
+            (z, z_p, m_p, logs_p, m_q, logs_q),
+            dur_l,
+            pitch_l,
+            ctc_loss,
+        )
 
-    def infer(self, phone, phone_lengths, score, pitch, slurs, sid=None, max_len=None):
-        x, m_p, logs_p, x_mask = self.enc_p(phone, score, pitch, slurs, phone_lengths)
+    def infer(
+        self, phone, phone_lengths, score, score_dur, slurs, sid=None, max_len=None
+    ):
+        x, m_p, logs_p, x_mask = self.enc_p(
+            phone, score, score_dur, slurs, phone_lengths
+        )
         if self.n_speakers > 0:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         else:
