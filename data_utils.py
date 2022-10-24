@@ -5,6 +5,7 @@ import torch.utils.data
 
 from mel_processing import spectrogram_torch
 from utils import load_wav_to_torch, load_filepaths_and_text
+import scipy.io.wavfile as sciwav
 
 
 class TextAudioLoader(torch.utils.data.Dataset):
@@ -124,7 +125,7 @@ class TextAudioLoader(torch.utils.data.Dataset):
                 self.win_length,
                 center=False,
             )
-            # align mel
+            # align mel and wave
             phone_dur_sum = torch.sum(phone_dur).item()
             spec_length = spec.shape[2]
 
@@ -137,6 +138,25 @@ class TextAudioLoader(torch.utils.data.Dataset):
                 )
             assert spec.shape[2] == phone_dur_sum
 
+            # align wav
+            fixed_wav_len = phone_dur_sum * self.hop_length
+            if audio_norm.shape[1] > fixed_wav_len:
+                audio_norm = audio_norm[:, :fixed_wav_len]
+            elif audio_norm.shape[1] < fixed_wav_len:
+                pad_length = fixed_wav_len - audio_norm.shape[1]
+                audio_norm = torch.nn.functional.pad(
+                    input=audio_norm,
+                    pad=(0, pad_length, 0, 0),
+                    mode="constant",
+                    value=0,
+                )
+            assert audio_norm.shape[1] == fixed_wav_len
+
+            # rewrite aligned wav
+            sciwav.write(
+                filename, self.sampling_rate, audio_norm.transpose(0, 1).numpy()
+            )
+            # save spec
             spec = torch.squeeze(spec, 0)
             torch.save(spec, spec_filename)
         return spec, audio_norm

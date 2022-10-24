@@ -588,7 +588,7 @@ class LengthRegulator(torch.nn.Module):
         self.hoplen = 256
         self.sr = 16000
 
-    def pad_list(xs, pad_value):
+    def pad_list(self, xs, pad_value):
         """Perform padding for the list of tensors.
 
         Args:
@@ -623,7 +623,6 @@ class LengthRegulator(torch.nn.Module):
 
         # expand xs
         xs = torch.transpose(xs, 1, 2)
-        # print("ds", ds)
         phn_repeat = [torch.repeat_interleave(x, d, dim=0) for x, d in zip(xs, ds)]
         output = self.pad_list(phn_repeat, self.pad_value)  # (B, D_frame, dim)
         output = torch.transpose(output, 1, 2)
@@ -978,6 +977,38 @@ class SynthesizerTrn(nn.Module):
         else:
             g = None
 
+        logw = self.dp(x, x_mask, score_dur, g=g)
+        logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
+        w = (logw * x_mask).type(torch.LongTensor).squeeze()
+        x_frame, frame_pitch, x_lengths = self.lr(x, score, w, phone_lengths)
+        x_frame = x_frame.to(x.device)
+        x_mask = torch.unsqueeze(
+            commons.sequence_mask(x_lengths, x_frame.size(2)), 1
+        ).to(x.dtype)
+        x_mask = x_mask.to(x.device)
+        max_len = x_frame.size(2)
+        d_model = x_frame.size(1)
+        batch_size = x_frame.size(0)
+        pe = torch.zeros(batch_size, max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2) * -(math.log(10000.0) / d_model)
+        )
+        pe[:, :, 0::2] = torch.sin(position * div_term)
+        pe[:, :, 1::2] = torch.cos(position * div_term)
+        pe = pe.transpose(1, 2).to(x_frame.device)
+        x_frame = x_frame + pe
+        pred_pitch, pitch_embedding = self.pitch_net(x_frame, x_mask)
+        lf0 = torch.unsqueeze(pred_pitch, -1)
+        f0 = torch.exp(lf0)
+        f0 = f0.to(x.device)
+        gt_f0 = 440 * (2 ** ((frame_pitch - 69) / 12))
+        gt_f0 = gt_f0.to(x.device)
+        f0 = f0.squeeze()
+        x_frame = self.frame_prior_net(x_frame, pitch_embedding, x_mask)
+        x_frame = x_frame.transpose(1, 2)
+        m_p, logs_p = self.project(x_frame, x_mask)
+
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * 0.3
         z = self.flow(z_p, x_mask, g=g, reverse=True)
         o = self.dec((z * x_mask)[:, :, :max_len], g=g)
@@ -1061,11 +1092,52 @@ class Synthesizer(nn.Module):
             inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels
         )
 
-    def infer(self, phone, phone_lengths, score, pitch, slurs, sid=None, max_len=None):
-        x, m_p, logs_p, x_mask = self.enc_p(phone, score, pitch, slurs, phone_lengths)
+    def infer(
+        self, phone, phone_lengths, score, score_dur, slurs, sid=None, max_len=None
+    ):
+        x, m_p, logs_p, x_mask = self.enc_p(
+            phone, score, score_dur, slurs, phone_lengths
+        )
+        if self.n_speakers > 0:
+            g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
+        else:
+            g = None
+
+        logw = self.dp(x, x_mask, score_dur, g=g)
+        logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
+        w = (logw * x_mask).type(torch.LongTensor).squeeze()
+        x_frame, frame_pitch, x_lengths = self.lr(x, score, w, phone_lengths)
+        x_frame = x_frame.to(x.device)
+        x_mask = torch.unsqueeze(
+            commons.sequence_mask(x_lengths, x_frame.size(2)), 1
+        ).to(x.dtype)
+        x_mask = x_mask.to(x.device)
+        max_len = x_frame.size(2)
+        d_model = x_frame.size(1)
+        batch_size = x_frame.size(0)
+        pe = torch.zeros(batch_size, max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2) * -(math.log(10000.0) / d_model)
+        )
+        pe[:, :, 0::2] = torch.sin(position * div_term)
+        pe[:, :, 1::2] = torch.cos(position * div_term)
+        pe = pe.transpose(1, 2).to(x_frame.device)
+        x_frame = x_frame + pe
+        pred_pitch, pitch_embedding = self.pitch_net(x_frame, x_mask)
+        lf0 = torch.unsqueeze(pred_pitch, -1)
+        f0 = torch.exp(lf0)
+        f0 = f0.to(x.device)
+        gt_f0 = 440 * (2 ** ((frame_pitch - 69) / 12))
+        gt_f0 = gt_f0.to(x.device)
+        f0 = f0.squeeze()
+        x_frame = self.frame_prior_net(x_frame, pitch_embedding, x_mask)
+        x_frame = x_frame.transpose(1, 2)
+        m_p, logs_p = self.project(x_frame, x_mask)
+
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * 0.3
-        z = self.flow(z_p, x_mask, g=None, reverse=True)
-        o = self.dec((z * x_mask)[:, :, :max_len], g=None)
+        z = self.flow(z_p, x_mask, g=g, reverse=True)
+        o = self.dec((z * x_mask)[:, :, :max_len], g=g)
         return o, x_mask, (z, z_p, m_p, logs_p)
 
     def remove_weight_norm(self):
