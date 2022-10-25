@@ -617,7 +617,7 @@ class LengthRegulator(torch.nn.Module):
 
         return pad
 
-    def forward(self, xs, notepitch, ds, x_lengths):
+    def forward(self, xs, ds, x_lengths):
         if ds.sum() == 0:
             ds[ds.sum(dim=1).eq(0)] = 1
 
@@ -627,18 +627,9 @@ class LengthRegulator(torch.nn.Module):
         output = self.pad_list(phn_repeat, self.pad_value)  # (B, D_frame, dim)
         output = torch.transpose(output, 1, 2)
 
-        # expand pitch
-        notepitch = torch.detach(notepitch)
-        pitch_repeat = [
-            torch.repeat_interleave(n, d, dim=0) for n, d in zip(notepitch, ds)
-        ]
-        frame_pitch = self.pad_list(pitch_repeat, self.pad_value)  # (B, D_frame)
+        x_lengths = torch.LongTensor([len(i) for i in phn_repeat]).to(output.device)
 
-        x_lengths = torch.LongTensor([len(i) for i in pitch_repeat]).to(
-            frame_pitch.device
-        )
-
-        return output, frame_pitch, x_lengths
+        return output, x_lengths
 
 
 class PitchPredictor(nn.Module):
@@ -881,6 +872,7 @@ class SynthesizerTrn(nn.Module):
         phone_dur,
         score,
         score_dur,
+        pitch,
         slurs,
         y,
         y_lengths,
@@ -896,10 +888,10 @@ class SynthesizerTrn(nn.Module):
 
         # duration
         w = phone_dur.unsqueeze(1)
-        logw_ = w * x_mask
-        logw = self.dp(x, x_mask, score_dur, g=g)
+        gt_logw = w * x_mask
+        pred_logw = self.dp(x, x_mask, score_dur, g=g)
 
-        x_frame, frame_pitch, x_lengths = self.lr(x, score, phone_dur, phone_lengths)
+        x_frame, x_lengths = self.lr(x, phone_dur, phone_lengths)
 
         x_frame = x_frame.to(x.device)
         x_mask = torch.unsqueeze(
@@ -923,15 +915,9 @@ class SynthesizerTrn(nn.Module):
 
         pred_pitch, pitch_embedding = self.pitch_net(x_frame, x_mask)
         lf0 = torch.unsqueeze(pred_pitch, -1)
-        gt_lf0 = torch.log(440 * (2 ** ((frame_pitch - 69) / 12)))
-        gt_lf0 = gt_lf0.to(x.device)
-        x_mask_sum = torch.sum(x_mask)
-        lf0 = lf0.squeeze()
-        pitch_l = torch.sum((gt_lf0 - lf0) ** 2, 1) / x_mask_sum
-        frame_pitch = frame_pitch + 1e-6
-        frame_pitch = torch.log(frame_pitch)
-        frame_pitch = torch.unsqueeze(frame_pitch, -1)
-        frame_pitch = frame_pitch.to(x.device)
+        gt_lf0 = pitch.to(torch.float32)
+        pred_lf0 = lf0.squeeze()
+
         x_frame = self.frame_prior_net(x_frame, pitch_embedding, x_mask)
         x_frame = x_frame.transpose(1, 2)
 
@@ -958,9 +944,10 @@ class SynthesizerTrn(nn.Module):
             x_mask,
             y_mask,
             (z, z_p, m_p, logs_p, m_q, logs_q),
-            logw_,
-            logw,
-            pitch_l,
+            gt_logw,
+            pred_logw,
+            gt_lf0,
+            pred_lf0,
             ctc_loss,
         )
 
@@ -978,7 +965,7 @@ class SynthesizerTrn(nn.Module):
         logw = self.dp(x, x_mask, score_dur, g=g)
         # logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
         w = (logw * x_mask).type(torch.LongTensor).squeeze(1)
-        x_frame, frame_pitch, x_lengths = self.lr(x, score, w, phone_lengths)
+        x_frame, x_lengths = self.lr(x, w, phone_lengths)
         x_frame = x_frame.to(x.device)
         x_mask = torch.unsqueeze(
             commons.sequence_mask(x_lengths, x_frame.size(2)), 1
@@ -997,12 +984,7 @@ class SynthesizerTrn(nn.Module):
         pe = pe.transpose(1, 2).to(x_frame.device)
         x_frame = x_frame + pe
         pred_pitch, pitch_embedding = self.pitch_net(x_frame, x_mask)
-        lf0 = torch.unsqueeze(pred_pitch, -1)
-        f0 = torch.exp(lf0)
-        f0 = f0.to(x.device)
-        gt_f0 = 440 * (2 ** ((frame_pitch - 69) / 12))
-        gt_f0 = gt_f0.to(x.device)
-        f0 = f0.squeeze()
+
         x_frame = self.frame_prior_net(x_frame, pitch_embedding, x_mask)
         x_frame = x_frame.transpose(1, 2)
         m_p, logs_p = self.project(x_frame, x_mask)
@@ -1091,7 +1073,15 @@ class Synthesizer(nn.Module):
         )
 
     def infer(
-        self, phone, phone_lengths, score, score_dur, slurs, sid=None, max_len=None
+        self,
+        phone,
+        phone_lengths,
+        score,
+        score_dur,
+        pitch,
+        slurs,
+        sid=None,
+        max_len=None,
     ):
         x, m_p, logs_p, x_mask = self.enc_p(
             phone, score, score_dur, slurs, phone_lengths
@@ -1104,7 +1094,7 @@ class Synthesizer(nn.Module):
         logw = self.dp(x, x_mask, score_dur, g=g)
         # logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
         w = (logw * x_mask).type(torch.LongTensor).squeeze(1)
-        x_frame, frame_pitch, x_lengths = self.lr(x, score, w, phone_lengths)
+        x_frame, x_lengths = self.lr(x, w, phone_lengths)
         x_frame = x_frame.to(x.device)
         x_mask = torch.unsqueeze(
             commons.sequence_mask(x_lengths, x_frame.size(2)), 1
@@ -1123,17 +1113,12 @@ class Synthesizer(nn.Module):
         pe = pe.transpose(1, 2).to(x_frame.device)
         x_frame = x_frame + pe
         pred_pitch, pitch_embedding = self.pitch_net(x_frame, x_mask)
-        lf0 = torch.unsqueeze(pred_pitch, -1)
-        f0 = torch.exp(lf0)
-        f0 = f0.to(x.device)
-        gt_f0 = 440 * (2 ** ((frame_pitch - 69) / 12))
-        gt_f0 = gt_f0.to(x.device)
-        f0 = f0.squeeze()
+
         x_frame = self.frame_prior_net(x_frame, pitch_embedding, x_mask)
         x_frame = x_frame.transpose(1, 2)
         m_p, logs_p = self.project(x_frame, x_mask)
 
-        z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * 0.3
+        z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * 1
         z = self.flow(z_p, x_mask, g=g, reverse=True)
         o = self.dec((z * x_mask)[:, :, :max_len], g=g)
         return o, x_mask, (z, z_p, m_p, logs_p)

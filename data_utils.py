@@ -43,11 +43,12 @@ class TextAudioLoader(torch.utils.data.Dataset):
             text_dur,
             score,
             score_dur,
+            pitch,
             slur,
         ) in self.audiopaths_and_text:
             if self.min_text_len <= len(text) and len(text) <= self.max_text_len:
                 audiopaths_and_text_new.append(
-                    [audiopath, text, text_dur, score, score_dur, slur]
+                    [audiopath, text, text_dur, score, score_dur, pitch, slur]
                 )
                 lengths.append(os.path.getsize(audiopath) // (2 * self.hop_length))
         self.audiopaths_and_text = audiopaths_and_text_new
@@ -60,10 +61,11 @@ class TextAudioLoader(torch.utils.data.Dataset):
         phone_dur = audiopath_and_text[2]
         score = audiopath_and_text[3]
         score_dur = audiopath_and_text[4]
-        slurs = audiopath_and_text[5]
+        pitch = audiopath_and_text[5]
+        slurs = audiopath_and_text[6]
 
-        phone, phone_dur, score, score_dur, slurs = self.get_labels(
-            phone, phone_dur, score, score_dur, slurs
+        phone, phone_dur, score, score_dur, pitch, slurs = self.get_labels(
+            phone, phone_dur, score, score_dur, pitch, slurs
         )
         spec, wav = self.get_audio(file, phone_dur)
 
@@ -88,27 +90,29 @@ class TextAudioLoader(torch.utils.data.Dataset):
             # print(f"len_wav={len_wav}")
             # spec = spec[:, :len_min]
             wav = wav[:, :len_wav]
-        return (phone, phone_dur, score, score_dur, slurs, spec, wav)
+        return (phone, phone_dur, score, score_dur, pitch, slurs, spec, wav)
 
-    def get_labels(self, phone, phone_dur, score, score_dur, slurs):
+    def get_labels(self, phone, phone_dur, score, score_dur, pitch, slurs):
         phone = np.load(phone)
         phone_dur = np.load(phone_dur)
         score = np.load(score)
         score_dur = np.load(score_dur)
+        pitch = np.load(pitch)
         slurs = np.load(slurs)
         phone = torch.LongTensor(phone)
         phone_dur = torch.LongTensor(phone_dur)
         score = torch.LongTensor(score)
         score_dur = torch.LongTensor(score_dur)
+        pitch = torch.LongTensor(pitch)
         slurs = torch.LongTensor(slurs)
-        return phone, phone_dur, score, score_dur, slurs
+        return phone, phone_dur, score, score_dur, pitch, slurs
 
     def get_audio(self, filename, phone_dur):
         audio, sampling_rate = load_wav_to_torch(filename)
         if sampling_rate != self.sampling_rate:
             raise ValueError(
                 "{} {} SR doesn't match target {} SR".format(
-                    sampling_rate, self.sampling_rate
+                    filename, sampling_rate, self.sampling_rate
                 )
             )
         audio_norm = audio / self.max_wav_value
@@ -117,52 +121,55 @@ class TextAudioLoader(torch.utils.data.Dataset):
         if os.path.exists(spec_filename):
             spec = torch.load(spec_filename)
         else:
-            spec = spectrogram_torch(
-                audio_norm,
-                self.filter_length,
-                self.sampling_rate,
-                self.hop_length,
-                self.win_length,
-                center=False,
-            )
-            # align mel and wave
-            phone_dur_sum = torch.sum(phone_dur).item()
-            spec_length = spec.shape[2]
+            print("please run data_vits_phn.py first")
+            assert FileExistsError
+        # else:
+        #     spec = spectrogram_torch(
+        #         audio_norm,
+        #         self.filter_length,
+        #         self.sampling_rate,
+        #         self.hop_length,
+        #         self.win_length,
+        #         center=False,
+        #     )
+        #     # align mel and wave
+        #     phone_dur_sum = torch.sum(phone_dur).item()
+        #     spec_length = spec.shape[2]
 
-            if spec_length > phone_dur_sum:
-                spec = spec[:, :, :phone_dur_sum]
-            elif spec_length < phone_dur_sum:
-                pad_length = phone_dur_sum - spec_length
-                spec = torch.nn.functional.pad(
-                    input=spec, pad=(0, pad_length, 0, 0), mode="constant", value=0
-                )
-            assert spec.shape[2] == phone_dur_sum
+        #     if spec_length > phone_dur_sum:
+        #         spec = spec[:, :, :phone_dur_sum]
+        #     elif spec_length < phone_dur_sum:
+        #         pad_length = phone_dur_sum - spec_length
+        #         spec = torch.nn.functional.pad(
+        #             input=spec, pad=(0, pad_length, 0, 0), mode="constant", value=0
+        #         )
+        #     assert spec.shape[2] == phone_dur_sum
 
-            # align wav
-            fixed_wav_len = phone_dur_sum * self.hop_length
-            if audio_norm.shape[1] > fixed_wav_len:
-                audio_norm = audio_norm[:, :fixed_wav_len]
-            elif audio_norm.shape[1] < fixed_wav_len:
-                pad_length = fixed_wav_len - audio_norm.shape[1]
-                audio_norm = torch.nn.functional.pad(
-                    input=audio_norm,
-                    pad=(0, pad_length, 0, 0),
-                    mode="constant",
-                    value=0,
-                )
-            assert audio_norm.shape[1] == fixed_wav_len
+        #     # align wav
+        #     fixed_wav_len = phone_dur_sum * self.hop_length
+        #     if audio_norm.shape[1] > fixed_wav_len:
+        #         audio_norm = audio_norm[:, :fixed_wav_len]
+        #     elif audio_norm.shape[1] < fixed_wav_len:
+        #         pad_length = fixed_wav_len - audio_norm.shape[1]
+        #         audio_norm = torch.nn.functional.pad(
+        #             input=audio_norm,
+        #             pad=(0, pad_length, 0, 0),
+        #             mode="constant",
+        #             value=0,
+        #         )
+        #     assert audio_norm.shape[1] == fixed_wav_len
 
-            # rewrite aligned wav
-            audio = (audio_norm * self.max_wav_value).transpose(0, 1).numpy()
+        #     # rewrite aligned wav
+        #     audio = (audio_norm * self.max_wav_value).transpose(0, 1).numpy().astype(np.int16)
 
-            sciwav.write(
-                filename,
-                self.sampling_rate,
-                audio,
-            )
-            # save spec
-            spec = torch.squeeze(spec, 0)
-            torch.save(spec, spec_filename)
+        #     sciwav.write(
+        #         filename,
+        #         self.sampling_rate,
+        #         audio,
+        #     )
+        #     # save spec
+        #     spec = torch.squeeze(spec, 0)
+        #     torch.save(spec, spec_filename)
         return spec, audio_norm
 
     def __getitem__(self, index):
@@ -186,27 +193,30 @@ class TextAudioCollate:
         """
         # Right zero-pad all one-hot text sequences to max input length
         _, ids_sorted_decreasing = torch.sort(
-            torch.LongTensor([x[5].size(1) for x in batch]), dim=0, descending=True
+            torch.LongTensor([x[6].size(1) for x in batch]), dim=0, descending=True
         )
 
         max_phone_len = max([len(x[0]) for x in batch])
+        max_spec_len = max([x[6].size(1) for x in batch])
+        max_wave_len = max([x[7].size(1) for x in batch])
+
         phone_lengths = torch.LongTensor(len(batch))
         phone_padded = torch.LongTensor(len(batch), max_phone_len)
         phone_dur_padded = torch.LongTensor(len(batch), max_phone_len)
         score_padded = torch.LongTensor(len(batch), max_phone_len)
         score_dur_padded = torch.LongTensor(len(batch), max_phone_len)
+        pitch_padded = torch.LongTensor(len(batch), max_spec_len)
         slurs_padded = torch.LongTensor(len(batch), max_phone_len)
         phone_padded.zero_()
         phone_dur_padded.zero_()
         score_padded.zero_()
         score_dur_padded.zero_()
+        pitch_padded.zero_()
         slurs_padded.zero_()
 
-        max_spec_len = max([x[5].size(1) for x in batch])
-        max_wave_len = max([x[6].size(1) for x in batch])
         spec_lengths = torch.LongTensor(len(batch))
         wave_lengths = torch.LongTensor(len(batch))
-        spec_padded = torch.FloatTensor(len(batch), batch[0][5].size(0), max_spec_len)
+        spec_padded = torch.FloatTensor(len(batch), batch[0][6].size(0), max_spec_len)
         wave_padded = torch.FloatTensor(len(batch), 1, max_wave_len)
         spec_padded.zero_()
         wave_padded.zero_()
@@ -227,14 +237,17 @@ class TextAudioCollate:
             score_dur = row[3]
             score_dur_padded[i, : score_dur.size(0)] = score_dur
 
-            slurs = row[4]
+            pitch = row[4]
+            pitch_padded[i, : pitch.size(0)] = pitch
+
+            slurs = row[5]
             slurs_padded[i, : slurs.size(0)] = slurs
 
-            spec = row[5]
+            spec = row[6]
             spec_padded[i, :, : spec.size(1)] = spec
             spec_lengths[i] = spec.size(1)
 
-            wave = row[6]
+            wave = row[7]
             wave_padded[i, :, : wave.size(1)] = wave
             wave_lengths[i] = wave.size(1)
 
@@ -244,6 +257,7 @@ class TextAudioCollate:
             phone_dur_padded,
             score_padded,
             score_dur_padded,
+            pitch_padded,
             slurs_padded,
             spec_padded,
             spec_lengths,

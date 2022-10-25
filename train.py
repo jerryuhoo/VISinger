@@ -191,6 +191,7 @@ def train_and_evaluate(
         phone_dur,
         score,
         score_dur,
+        pitch,
         slurs,
         spec,
         spec_lengths,
@@ -204,6 +205,7 @@ def train_and_evaluate(
         phone_dur = phone_dur.cuda(rank, non_blocking=True)
         score = score.cuda(rank, non_blocking=True)
         score_dur = score_dur.cuda(rank, non_blocking=True)
+        pitch = pitch.cuda(rank, non_blocking=True)
         slurs = slurs.cuda(rank, non_blocking=True)
 
         spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(
@@ -220,9 +222,10 @@ def train_and_evaluate(
                 x_mask,
                 z_mask,
                 (z, z_p, m_p, logs_p, m_q, logs_q),
-                logw_,
-                logw,
-                pitch_l,
+                gt_logw,
+                pred_logw,
+                gt_lf0,
+                pred_lf0,
                 ctc_loss,
             ) = net_g(
                 phone,
@@ -230,6 +233,7 @@ def train_and_evaluate(
                 phone_dur,
                 score,
                 score_dur,
+                pitch,
                 slurs,
                 spec,
                 spec_lengths,
@@ -284,8 +288,8 @@ def train_and_evaluate(
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
                 mse_loss = nn.MSELoss()
-                loss_dur = mse_loss(logw_, logw)
-                loss_pitch = torch.sum(pitch_l.float())
+                loss_dur = mse_loss(gt_logw, pred_logw)
+                loss_pitch = mse_loss(gt_lf0, pred_lf0)
                 loss_gen_all = (
                     loss_gen
                     + loss_fm
@@ -326,6 +330,8 @@ def train_and_evaluate(
                     loss_kl = 5
                 if loss_dur > 100:
                     loss_dur = 100
+                if loss_pitch > 100:
+                    loss_pitch = 100
 
                 logger.info([global_step, lr])
                 logger.info(
@@ -412,6 +418,7 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
             phone_dur,
             score,
             score_dur,
+            pitch,
             slurs,
             spec,
             spec_lengths,
@@ -423,6 +430,7 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
             phone_dur = phone_dur.cuda(0)
             score = score.cuda(0)
             score_dur = score_dur.cuda(0)
+            pitch = pitch.cuda(0)
             slurs = slurs.cuda(0)
 
             spec, spec_lengths = spec.cuda(0), spec_lengths.cuda(0)
@@ -434,9 +442,10 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                 x_mask,
                 z_mask,
                 (z, z_p, m_p, logs_p, m_q, logs_q),
-                logw_,
-                logw,
-                pitch_l,
+                gt_logw,
+                pred_logw,
+                gt_lf0,
+                pred_lf0,
                 ctc_loss,
             ) = generator(
                 phone,
@@ -444,6 +453,7 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                 phone_dur,
                 score,
                 score_dur,
+                pitch,
                 slurs,
                 spec,
                 spec_lengths,
@@ -507,8 +517,8 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
                 mse_loss = nn.MSELoss()
-                loss_dur = mse_loss(logw_, logw)
-                loss_pitch = torch.sum(pitch_l.float())
+                loss_dur = mse_loss(gt_logw, pred_logw)
+                loss_pitch = mse_loss(gt_lf0, pred_lf0)
                 loss_gen_all = (
                     loss_gen
                     + loss_fm
@@ -534,6 +544,10 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                     loss_mel = 50
                 if loss_kl > 5:
                     loss_kl = 5
+                if loss_dur > 100:
+                    loss_dur = 100
+                if loss_pitch > 100:
+                    loss_pitch = 100
 
                 logger.info(
                     f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f}"
