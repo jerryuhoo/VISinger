@@ -153,8 +153,12 @@ class TextAudioLoader(torch.utils.data.Dataset):
             assert audio_norm.shape[1] == fixed_wav_len
 
             # rewrite aligned wav
+            audio = (audio_norm * self.max_wav_value).transpose(0, 1).numpy()
+
             sciwav.write(
-                filename, self.sampling_rate, audio_norm.transpose(0, 1).numpy()
+                filename,
+                self.sampling_rate,
+                audio,
             )
             # save spec
             spec = torch.squeeze(spec, 0)
