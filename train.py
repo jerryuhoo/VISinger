@@ -220,7 +220,8 @@ def train_and_evaluate(
                 x_mask,
                 z_mask,
                 (z, z_p, m_p, logs_p, m_q, logs_q),
-                dur_l,
+                logw_,
+                logw,
                 pitch_l,
                 ctc_loss,
             ) = net_g(
@@ -282,7 +283,8 @@ def train_and_evaluate(
 
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                loss_dur = torch.sum(dur_l.float())
+                mse_loss = nn.MSELoss()
+                loss_dur = mse_loss(logw_, logw)
                 loss_pitch = torch.sum(pitch_l.float())
                 loss_gen_all = (
                     loss_gen
@@ -432,7 +434,8 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                 x_mask,
                 z_mask,
                 (z, z_p, m_p, logs_p, m_q, logs_q),
-                dur_l,
+                logw_,
+                logw,
                 pitch_l,
                 ctc_loss,
             ) = generator(
@@ -503,7 +506,8 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                 loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                loss_dur = torch.sum(dur_l.float())
+                mse_loss = nn.MSELoss()
+                loss_dur = mse_loss(logw_, logw)
                 loss_pitch = torch.sum(pitch_l.float())
                 loss_gen_all = (
                     loss_gen

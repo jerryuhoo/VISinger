@@ -898,10 +898,7 @@ class SynthesizerTrn(nn.Module):
         w = phone_dur.unsqueeze(1)
         logw_ = w * x_mask
         logw = self.dp(x, x_mask, score_dur, g=g)
-        logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
-        l_loss = torch.sum((logw - logw_) ** 2, [1, 2])
-        x_mask_sum = torch.sum(x_mask)
-        dur_l = l_loss / x_mask_sum
+
         x_frame, frame_pitch, x_lengths = self.lr(x, score, phone_dur, phone_lengths)
 
         x_frame = x_frame.to(x.device)
@@ -961,7 +958,8 @@ class SynthesizerTrn(nn.Module):
             x_mask,
             y_mask,
             (z, z_p, m_p, logs_p, m_q, logs_q),
-            dur_l,
+            logw_,
+            logw,
             pitch_l,
             ctc_loss,
         )
@@ -978,8 +976,8 @@ class SynthesizerTrn(nn.Module):
             g = None
 
         logw = self.dp(x, x_mask, score_dur, g=g)
-        logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
-        w = (logw * x_mask).type(torch.LongTensor).squeeze()
+        # logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
+        w = (logw * x_mask).type(torch.LongTensor).squeeze(1)
         x_frame, frame_pitch, x_lengths = self.lr(x, score, w, phone_lengths)
         x_frame = x_frame.to(x.device)
         x_mask = torch.unsqueeze(
@@ -1104,8 +1102,8 @@ class Synthesizer(nn.Module):
             g = None
 
         logw = self.dp(x, x_mask, score_dur, g=g)
-        logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
-        w = (logw * x_mask).type(torch.LongTensor).squeeze()
+        # logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
+        w = (logw * x_mask).type(torch.LongTensor).squeeze(1)
         x_frame, frame_pitch, x_lengths = self.lr(x, score, w, phone_lengths)
         x_frame = x_frame.to(x.device)
         x_mask = torch.unsqueeze(
