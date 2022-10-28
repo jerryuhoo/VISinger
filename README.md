@@ -15,7 +15,7 @@ export PYTHONPATH=.
 ```
 
 ```bash
-python prepare/data_vits.py
+python prepare/data_vits_phn.py
 ```
 
 生成文件 ../VISinger_data/label_vits/XXX._label.npy|XXX_score.npy|XXX_pitch.npy|XXX_slurs.npy

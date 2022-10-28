@@ -9,6 +9,7 @@ from prepare.phone_uv import uv_map
 from prepare.dur_to_frame import dur_to_frame
 from prepare.align_wav_spec import Align
 
+
 def load_midi_map():
     notemap = {}
     notemap["rest"] = 0
@@ -173,8 +174,9 @@ class SingInput(object):
     def align_process(self, file, phn_dur):
         return self.align.align_wav_spec(file, phn_dur)
 
+
 class FeatureInput(object):
-    def __init__(self, path, samplerate=16000, hop_size=128):
+    def __init__(self, path, samplerate=16000, hop_size=256):
         self.fs = samplerate
         self.hop = hop_size
         self.path = path
@@ -249,9 +251,11 @@ if __name__ == "__main__":
     notemaper = load_midi_map()
     logging.info(notemaper)
 
-    singInput = SingInput(16000, 256)
-    featureInput = FeatureInput(wav_path, 16000, 256)
-    
+    sample_rate = 16000
+    hop_size = 256
+    singInput = SingInput(sample_rate, hop_size)
+    featureInput = FeatureInput(wav_path, sample_rate, hop_size)
+
     if not os.path.exists(output_path):
         os.mkdir(output_path)
 
@@ -306,17 +310,25 @@ if __name__ == "__main__":
         # scores_ids = singInput.expandInput(scores_ids, labels_frames)
         # scores_pit = singInput.scorePitch(scores_ids)
         featur_pit = featureInput.compute_f0(f"{file}_bits16.wav")
-        wav_file = os.path.join(wav_path, file+"_bits16.wav")
-        
+        wav_file = os.path.join(wav_path, file + "_bits16.wav")
+
         spec_len = singInput.align_process(wav_file, labels_dur)
-        featur_pit = featur_pit[: spec_len]
-        
+
+        # extend uv
+        labels_uvs = np.repeat(labels_uvs, labels_dur, axis=0)
+
+        featur_pit = featur_pit[:spec_len]
+
         if featur_pit.shape[0] < spec_len:
             pad_length = spec_len - featur_pit.shape[0]
-            featur_pit = np.pad(featur_pit, pad_width=(0, pad_length), mode='constant')
+            featur_pit = np.pad(featur_pit, pad_width=(0, pad_length), mode="constant")
         assert featur_pit.shape[0] == spec_len
-        # featur_pit = featur_pit * labels_uvs
+        featur_pit = featur_pit * labels_uvs
         coarse_pit = featureInput.coarse_f0(featur_pit)
+
+        # log f0
+        nonzero_idxs = np.where(featur_pit != 0)[0]
+        featur_pit[nonzero_idxs] = np.log(featur_pit[nonzero_idxs])
 
         # offset_pit = featureInput.diff_f0(scores_pit, featur_pit, labels_frames)
         # assert len(labels_ids) == len(coarse_pit)
@@ -326,10 +338,13 @@ if __name__ == "__main__":
         assert len(scores_dur) == len(labels_slr)
 
         logging.info("labels_ids {}".format(labels_ids))
-        logging.info("labels_dur {}".format(labels_dur))
-        logging.info("scores_ids {}".format(scores_ids))
-        logging.info("scores_dur {}".format(scores_dur))
-        logging.info("labels_slr {}".format(labels_slr))
+        # logging.info("labels_dur {}".format(labels_dur))
+        # logging.info("scores_ids {}".format(scores_ids))
+        # logging.info("scores_dur {}".format(scores_dur))
+        # logging.info("labels_slr {}".format(labels_slr))
+        logging.info("labels_uvs {}".format(labels_uvs))
+        logging.info("featur_pit {}".format(featur_pit))
+        logging.info("coarse_pit {}".format(coarse_pit))
 
         np.save(
             output_path + f"{file}_label.npy",
@@ -353,6 +368,11 @@ if __name__ == "__main__":
         )
         np.save(
             output_path + f"{file}_pitch.npy",
+            featur_pit,
+            allow_pickle=False,
+        )
+        np.save(
+            output_path + f"{file}_coarse_pit.npy",
             coarse_pit,
             allow_pickle=False,
         )
