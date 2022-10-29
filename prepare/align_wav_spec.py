@@ -7,6 +7,7 @@ from utils import load_wav_to_torch
 import scipy.io.wavfile as sciwav
 import os
 
+
 class Align:
     def __init__(
         self, max_wav_value, sampling_rate, filter_length, hop_length, win_length
@@ -70,7 +71,10 @@ class Align:
 
             # rewrite aligned wav
             audio = (
-                (audio_norm * self.max_wav_value).transpose(0, 1).numpy().astype(np.int16)
+                (audio_norm * self.max_wav_value)
+                .transpose(0, 1)
+                .numpy()
+                .astype(np.int16)
             )
 
             sciwav.write(
@@ -82,3 +86,13 @@ class Align:
             spec = torch.squeeze(spec, 0)
             torch.save(spec, spec_filename)
         return spec.shape[1]
+
+    def normalize_wav(self, input_path, output_path):
+        audio, sampling_rate = load_wav_to_torch(input_path)
+        audio_norm = audio.numpy() / self.max_wav_value
+        audio_norm *= 32767 / max(0.01, np.max(np.abs(audio_norm))) * 0.6
+        sciwav.write(
+            output_path,
+            sampling_rate,
+            audio_norm.astype(np.int16),
+        )
