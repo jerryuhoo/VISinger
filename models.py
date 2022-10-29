@@ -173,7 +173,7 @@ class TextEncoder(nn.Module):
             init_size=4000,
         )
         self.drop = nn.Dropout(p_dropout)
-        self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
+        # self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
     def forward(self, phone, score, score_dur, slurs, lengths):
         x = self.emb_phone(phone)
@@ -205,10 +205,11 @@ class TextEncoder(nn.Module):
         x = x + p
         x = self.drop(x)
 
-        stats = self.proj(x) * x_mask
+        # stats = self.proj(x) * x_mask
 
-        m, logs = torch.split(stats, self.out_channels, dim=1)
-        return x, m, logs, x_mask
+        # m, logs = torch.split(stats, self.out_channels, dim=1)
+        # return x, m, logs, x_mask
+        return x, x_mask
 
 
 class ResidualCouplingBlock(nn.Module):
@@ -654,8 +655,6 @@ class PitchPredictor(nn.Module):
         self.kernel_size = kernel_size
         self.p_dropout = p_dropout
 
-        self.emb = nn.Embedding(121, hidden_channels)
-
         self.pitch_net = attentions.Encoder(
             hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout
         )
@@ -689,8 +688,6 @@ class PhonemesPredictor(nn.Module):
         self.n_layers = n_layers
         self.kernel_size = kernel_size
         self.p_dropout = p_dropout
-
-        self.emb = nn.Embedding(n_vocab, hidden_channels)
 
         self.phonemes_predictor = attentions.Encoder(
             hidden_channels, filter_channels, n_heads, 2, kernel_size, p_dropout
@@ -728,8 +725,6 @@ class FramePriorNet(nn.Module):
         self.n_layers = n_layers
         self.kernel_size = kernel_size
         self.p_dropout = p_dropout
-
-        self.emb = nn.Embedding(121, hidden_channels)
 
         self.fft_block = attentions.Encoder(
             hidden_channels, filter_channels, n_heads, 4, kernel_size, p_dropout
@@ -878,9 +873,7 @@ class SynthesizerTrn(nn.Module):
         y_lengths,
         sid=None,
     ):
-        x, m_p, logs_p, x_mask = self.enc_p(
-            phone, score, score_dur, slurs, phone_lengths
-        )
+        x, x_mask = self.enc_p(phone, score, score_dur, slurs, phone_lengths)
         if self.n_speakers > 0:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         else:
@@ -954,7 +947,7 @@ class SynthesizerTrn(nn.Module):
     def infer(
         self, phone, phone_lengths, score, score_dur, slurs, sid=None, max_len=None
     ):
-        x, m_p, logs_p, x_mask = self.enc_p(
+        x, x_mask = self.enc_p(
             phone, score, score_dur, slurs, phone_lengths
         )
         if self.n_speakers > 0:
@@ -1083,7 +1076,7 @@ class Synthesizer(nn.Module):
         sid=None,
         max_len=None,
     ):
-        x, m_p, logs_p, x_mask = self.enc_p(
+        x, x_mask = self.enc_p(
             phone, score, score_dur, slurs, phone_lengths
         )
         if self.n_speakers > 0:

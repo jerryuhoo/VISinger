@@ -113,10 +113,10 @@ def run(rank, n_gpus, hps):
         betas=hps.train.betas,
         eps=hps.train.eps,
     )
-    net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
-    net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
-    # net_g = DDP(net_g, device_ids=[rank])
-    # net_d = DDP(net_d, device_ids=[rank])
+    # net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
+    # net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
+    net_g = DDP(net_g, device_ids=[rank])
+    net_d = DDP(net_d, device_ids=[rank])
 
     try:
         _, _, _, epoch_str = utils.load_checkpoint(
@@ -301,6 +301,11 @@ def train_and_evaluate(
                 )
         optim_g.zero_grad()
         scaler.scale(loss_gen_all).backward()
+
+        # for name, param in net_g.named_parameters():
+        #     if param.grad is None:
+        #         print(name)
+
         scaler.unscale_(optim_g)
         grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
         scaler.step(optim_g)
@@ -402,6 +407,17 @@ def train_and_evaluate(
                     epoch,
                     os.path.join(hps.model_dir, "D_{}.pth".format(global_step)),
                 )
+                keep_num = hps.train.keep_n_models
+                eval_interval = hps.train.eval_interval
+                if global_step / eval_interval >= keep_num:
+                    os.remove(
+                        hps.model_dir,
+                        "G_{}.pth".format(global_step - keep_num * eval_interval),
+                    )
+                    os.remove(
+                        hps.model_dir,
+                        "D_{}.pth".format(global_step - keep_num * eval_interval),
+                    )
         global_step += 1
 
     if rank == 0:
