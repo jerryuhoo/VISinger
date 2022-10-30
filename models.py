@@ -947,9 +947,7 @@ class SynthesizerTrn(nn.Module):
     def infer(
         self, phone, phone_lengths, score, score_dur, slurs, sid=None, max_len=None
     ):
-        x, x_mask = self.enc_p(
-            phone, score, score_dur, slurs, phone_lengths
-        )
+        x, x_mask = self.enc_p(phone, score, score_dur, slurs, phone_lengths)
         if self.n_speakers > 0:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         else:
@@ -1076,9 +1074,7 @@ class Synthesizer(nn.Module):
         sid=None,
         max_len=None,
     ):
-        x, x_mask = self.enc_p(
-            phone, score, score_dur, slurs, phone_lengths
-        )
+        x, x_mask = self.enc_p(phone, score, score_dur, slurs, phone_lengths)
         if self.n_speakers > 0:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         else:
@@ -1086,7 +1082,7 @@ class Synthesizer(nn.Module):
 
         logw = self.dp(x, x_mask, score_dur, g=g)
         # logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
-        w = (logw * x_mask).type(torch.LongTensor).squeeze(1)
+        w = (logw * x_mask).type(torch.LongTensor).to(x.device).squeeze(1)
         x_frame, x_lengths = self.lr(x, w, phone_lengths)
         x_frame = x_frame.to(x.device)
         x_mask = torch.unsqueeze(

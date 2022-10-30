@@ -410,18 +410,25 @@ def train_and_evaluate(
                 keep_num = hps.train.keep_n_models
                 eval_interval = hps.train.eval_interval
                 if global_step / eval_interval >= keep_num:
-                    os.remove(
-                        os.path.join(
-                            hps.model_dir,
-                            "G_{}.pth".format(global_step - keep_num * eval_interval),
+                    try:
+                        os.remove(
+                            os.path.join(
+                                hps.model_dir,
+                                "G_{}.pth".format(
+                                    global_step - keep_num * eval_interval
+                                ),
+                            )
                         )
-                    )
-                    os.remove(
-                        os.path.join(
-                            hps.model_dir,
-                            "D_{}.pth".format(global_step - keep_num * eval_interval),
+                        os.remove(
+                            os.path.join(
+                                hps.model_dir,
+                                "D_{}.pth".format(
+                                    global_step - keep_num * eval_interval
+                                ),
+                            )
                         )
-                    )
+                    except OSError:
+                        pass
         global_step += 1
 
     if rank == 0:

@@ -18,6 +18,8 @@ def save_wav(wav, path, rate):
     wavfile.write(path, rate, wav.astype(np.int16))
 
 
+use_cuda = True
+
 # define model and load checkpoint
 hps = utils.get_hparams_from_file("./configs/singing_base.json")
 
@@ -30,7 +32,10 @@ net_g = SynthesizerTrn(
     **hps.model,
 )  # .cuda()
 
-_ = utils.load_checkpoint("./logs/singing_base/G_146000.pth", net_g, None)
+if use_cuda:
+    net_g = net_g.cuda()
+
+_ = utils.load_checkpoint("./logs/singing_base/G_150000.pth", net_g, None)
 net_g.eval()
 # net_g.remove_weight_norm()
 
@@ -74,16 +79,18 @@ while True:
 
     begin_time = time()
     with torch.no_grad():
-        # phone = phone.cuda().unsqueeze(0)
-        # score = score.cuda().unsqueeze(0)
-        # pitch = pitch.cuda().unsqueeze(0)
-        # slurs = slurs.cuda().unsqueeze(0)
-        # phone_lengths = torch.LongTensor([phone_lengths]).cuda()
-        phone = phone.unsqueeze(0)
-        score = score.unsqueeze(0)
-        score_dur = score_dur.unsqueeze(0)
-        slurs = slurs.unsqueeze(0)
-        phone_lengths = torch.LongTensor([phone_lengths])
+        if use_cuda:
+            phone = phone.cuda().unsqueeze(0)
+            score = score.cuda().unsqueeze(0)
+            score_dur = score_dur.cuda().unsqueeze(0)
+            slurs = slurs.cuda().unsqueeze(0)
+            phone_lengths = torch.LongTensor([phone_lengths]).cuda()
+        else:
+            phone = phone.unsqueeze(0)
+            score = score.unsqueeze(0)
+            score_dur = score_dur.unsqueeze(0)
+            slurs = slurs.unsqueeze(0)
+            phone_lengths = torch.LongTensor([phone_lengths])
         audio = (
             net_g.infer(phone, phone_lengths, score, score_dur, slurs)[0][0, 0]
             .data.cpu()

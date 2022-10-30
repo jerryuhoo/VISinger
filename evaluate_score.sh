@@ -46,3 +46,5 @@ python evaluate/evaluate_vuv.py \
     ${_gen_wavdir} \
     ${_gt_wavscp} \
     --outdir "${_gen_wavdir}/VUV_res"
+
+zip singing_out.zip singing_out/*.wav
