@@ -955,7 +955,7 @@ class SynthesizerTrn(nn.Module):
 
         logw = self.dp(x, x_mask, score_dur, g=g)
         # logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
-        w = (logw * x_mask).type(torch.LongTensor).squeeze(1)
+        w = (logw * x_mask).type(torch.LongTensor).to(x.device).squeeze(1)
         x_frame, x_lengths = self.lr(x, w, phone_lengths)
         x_frame = x_frame.to(x.device)
         x_mask = torch.unsqueeze(
