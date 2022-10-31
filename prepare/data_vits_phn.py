@@ -31,7 +31,7 @@ def load_midi_map():
 
 
 class SingInput(object):
-    def __init__(self, sample_rate=16000, hop_size=256):
+    def __init__(self, sample_rate=24000, hop_size=256):
         self.fs = sample_rate
         self.hop = hop_size
         self.notemaper = load_midi_map()
@@ -176,7 +176,7 @@ class SingInput(object):
 
 
 class FeatureInput(object):
-    def __init__(self, path, samplerate=16000, hop_size=256):
+    def __init__(self, path, samplerate=24000, hop_size=256):
         self.fs = samplerate
         self.hop = hop_size
         self.path = path
@@ -245,13 +245,13 @@ class FeatureInput(object):
 
 if __name__ == "__main__":
     output_path = "../VISinger_data/label_vits_phn/"
-    wav_path = "../VISinger_data/wav_dump_16k/"
+    wav_path = "../VISinger_data/wav_dump_24k/"
     logging.basicConfig(level=logging.INFO)  # ERROR & INFO
 
     notemaper = load_midi_map()
     logging.info(notemaper)
 
-    sample_rate = 16000
+    sample_rate = 24000
     hop_size = 256
     singInput = SingInput(sample_rate, hop_size)
     featureInput = FeatureInput(wav_path, sample_rate, hop_size)
@@ -383,7 +383,7 @@ if __name__ == "__main__":
         )
 
         # wave path|label path|label frame|score path|score duration;上面是一个.（当前目录），下面是两个..（从子目录调用）
-        path_wave = f"../VISinger_data/wav_dump_16k/{file}_bits16.wav"
+        path_wave = wav_path + f"{file}_bits16.wav"
         path_label = output_path + f"{file}_label.npy"
         path_label_dur = output_path + f"{file}_label_dur.npy"
         path_score = output_path + f"{file}_score.npy"
