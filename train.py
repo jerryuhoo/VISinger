@@ -335,8 +335,8 @@ def train_and_evaluate(
                     loss_kl = 5
                 if loss_dur > 100:
                     loss_dur = 100
-                if loss_pitch > 100:
-                    loss_pitch = 100
+                # if loss_pitch > 100:
+                #     loss_pitch = 100
 
                 logger.info([global_step, lr])
                 logger.info(
@@ -573,8 +573,8 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                     loss_kl = 5
                 if loss_dur > 100:
                     loss_dur = 100
-                if loss_pitch > 100:
-                    loss_pitch = 100
+                # if loss_pitch > 100:
+                #     loss_pitch = 100
 
                 logger.info(
                     f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f}"
