@@ -155,7 +155,7 @@ class TextEncoder(nn.Module):
 
         self.emb_phone = nn.Embedding(n_vocab, hidden_channels)  # phone lables
         self.emb_score = nn.Embedding(128, hidden_channels)  # pitch notes
-        self.emb_score_dur = nn.Embedding(512, hidden_channels)  # pitch 256
+        self.emb_score_dur = nn.Embedding(600, hidden_channels)  # 512
         self.emb_slurs = nn.Embedding(2, hidden_channels)  # phone slur
         nn.init.normal_(self.emb_phone.weight, 0.0, hidden_channels**-0.5)
         nn.init.normal_(self.emb_score.weight, 0.0, hidden_channels**-0.5)
