@@ -289,7 +289,7 @@ def train_and_evaluate(
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
                 mse_loss = nn.MSELoss()
                 loss_dur = mse_loss(gt_logw, pred_logw)
-                loss_pitch = mse_loss(gt_lf0, pred_lf0) * 0.05
+                loss_pitch = mse_loss(gt_lf0, pred_lf0)
                 loss_gen_all = (
                     loss_gen
                     + loss_fm
@@ -545,7 +545,7 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
                 mse_loss = nn.MSELoss()
                 loss_dur = mse_loss(gt_logw, pred_logw)
-                loss_pitch = mse_loss(gt_lf0, pred_lf0) * 0.05
+                loss_pitch = mse_loss(gt_lf0, pred_lf0)
                 loss_gen_all = (
                     loss_gen
                     + loss_fm

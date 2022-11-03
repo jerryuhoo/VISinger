@@ -103,7 +103,7 @@ class TextAudioLoader(torch.utils.data.Dataset):
         phone_dur = torch.LongTensor(phone_dur)
         score = torch.LongTensor(score)
         score_dur = torch.LongTensor(score_dur)
-        pitch = torch.LongTensor(pitch)
+        pitch = torch.FloatTensor(pitch)
         slurs = torch.LongTensor(slurs)
         return phone, phone_dur, score, score_dur, pitch, slurs
 
@@ -205,7 +205,7 @@ class TextAudioCollate:
         phone_dur_padded = torch.LongTensor(len(batch), max_phone_len)
         score_padded = torch.LongTensor(len(batch), max_phone_len)
         score_dur_padded = torch.LongTensor(len(batch), max_phone_len)
-        pitch_padded = torch.LongTensor(len(batch), max_spec_len)
+        pitch_padded = torch.FloatTensor(len(batch), max_spec_len)
         slurs_padded = torch.LongTensor(len(batch), max_phone_len)
         phone_padded.zero_()
         phone_dur_padded.zero_()

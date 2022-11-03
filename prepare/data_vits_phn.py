@@ -366,16 +366,16 @@ if __name__ == "__main__":
             scores_dur,
             allow_pickle=False,
         )
-        # np.save(
-        #     output_path + f"{file}_pitch.npy",
-        #     featur_pit,
-        #     allow_pickle=False,
-        # )
         np.save(
             output_path + f"{file}_pitch.npy",
-            coarse_pit,
+            featur_pit,
             allow_pickle=False,
         )
+        # np.save(
+        #     output_path + f"{file}_pitch.npy",
+        #     coarse_pit,
+        #     allow_pickle=False,
+        # )
         np.save(
             output_path + f"{file}_slurs.npy",
             labels_slr,
