@@ -1,7 +1,7 @@
 echo "Scoring"
 
 
-_gt_wavscp="/home/yyu479/VISinger_data/wav_dump_16k"
+_gt_wavscp="singing_gt"
 _dir="evaluate"
 _gen_wavdir="singing_out"
 

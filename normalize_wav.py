@@ -2,9 +2,9 @@ from prepare.align_wav_spec import Align
 import os
 from tqdm import tqdm
 
-align = Align(32768, 16000, 1024, 256, 1024)
+align = Align(32768, 24000, 1024, 256, 1024)
 output_path = "singing_gt"
-input_path = "/home/yyu479/VISinger_data/wav_dump_16k"
+input_path = "/home/yyu479/VISinger_data/wav_dump_24k"
 
 files = os.listdir(path=input_path)
 for i, wav_file in enumerate(tqdm(files)):
