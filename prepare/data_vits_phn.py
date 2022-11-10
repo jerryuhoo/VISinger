@@ -247,6 +247,9 @@ if __name__ == "__main__":
     output_path = "../VISinger_data/label_vits_phn/"
     wav_path = "../VISinger_data/wav_dump_24k/"
     logging.basicConfig(level=logging.INFO)  # ERROR & INFO
+    pitch_norm = True
+    pitch_intp = True
+    uv_process = False
 
     notemaper = load_midi_map()
     logging.info(notemaper)
@@ -323,12 +326,23 @@ if __name__ == "__main__":
             pad_length = spec_len - featur_pit.shape[0]
             featur_pit = np.pad(featur_pit, pad_width=(0, pad_length), mode="constant")
         assert featur_pit.shape[0] == spec_len
-        featur_pit = featur_pit * labels_uvs
+        if uv_process:
+            featur_pit = featur_pit * labels_uvs
         coarse_pit = featureInput.coarse_f0(featur_pit)
 
         # log f0
-        nonzero_idxs = np.where(featur_pit != 0)[0]
-        featur_pit[nonzero_idxs] = np.log(featur_pit[nonzero_idxs])
+        if not pitch_norm:
+            nonzero_idxs = np.where(featur_pit != 0)[0]
+            featur_pit[nonzero_idxs] = np.log(featur_pit[nonzero_idxs])
+        else:
+            featur_pit = 2595.0 * np.log10(1.0 + featur_pit / 700.0) / 500
+
+        if pitch_intp:
+            uv = featur_pit == 0
+            featur_pit_intp = np.copy(featur_pit)
+            featur_pit_intp[uv] = np.interp(
+                np.where(uv)[0], np.where(~uv)[0], featur_pit[~uv]
+            )
 
         # offset_pit = featureInput.diff_f0(scores_pit, featur_pit, labels_frames)
         # assert len(labels_ids) == len(coarse_pit)
@@ -342,9 +356,9 @@ if __name__ == "__main__":
         # logging.info("scores_ids {}".format(scores_ids))
         # logging.info("scores_dur {}".format(scores_dur))
         # logging.info("labels_slr {}".format(labels_slr))
-        logging.info("labels_uvs {}".format(labels_uvs))
-        logging.info("featur_pit {}".format(featur_pit))
-        logging.info("coarse_pit {}".format(coarse_pit))
+        # logging.info("labels_uvs {}".format(labels_uvs))
+        # logging.info("featur_pit {}".format(featur_pit))
+        logging.info("featur_pit_intp {}".format(featur_pit_intp))
 
         np.save(
             output_path + f"{file}_label.npy",
@@ -366,11 +380,18 @@ if __name__ == "__main__":
             scores_dur,
             allow_pickle=False,
         )
-        np.save(
-            output_path + f"{file}_pitch.npy",
-            featur_pit,
-            allow_pickle=False,
-        )
+        if not pitch_intp:
+            np.save(
+                output_path + f"{file}_pitch.npy",
+                featur_pit,
+                allow_pickle=False,
+            )
+        else:
+            np.save(
+                output_path + f"{file}_pitch.npy",
+                featur_pit_intp,
+                allow_pickle=False,
+            )
         # np.save(
         #     output_path + f"{file}_pitch.npy",
         #     coarse_pit,
