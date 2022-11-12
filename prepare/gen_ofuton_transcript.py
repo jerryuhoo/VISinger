@@ -27,8 +27,25 @@ def text2tokens_svs(syllable: str) -> List[str]:
     return tokens
 
 
+def note_filter(note_name, note_map):
+    note_name = note_name.replace("-", "")
+    if "#" in note_name:
+        note_name = note_name + "/" + note_map[note_name[0]] + "b" + note_name[2]
+    return note_name
+
+
 # eval(valid), dev(test), train
 def process(base_path, file_path):
+
+    note_map = {
+        "A": "B",
+        "B": "C",
+        "C": "D",
+        "D": "E",
+        "E": "F",
+        "F": "G",
+        "G": "A",
+    }
 
     label_path = file_path + "label"
     text_path = file_path + "text"
@@ -50,6 +67,7 @@ def process(base_path, file_path):
             except:
                 if str_list[i] != "" and str_list[i].isalpha():
                     phn.append(str_list[i])
+                    phn_dict.add(str_list[i])
                 continue
 
             phn_dur.append(phn_dur_)
@@ -79,7 +97,7 @@ def process(base_path, file_path):
                 for part in parse_file.parts:
                     for note in part.recurse().notes:
                         note_dur_ = note.quarterLength * 60 / tempo.number
-                        note_name_ = note.nameWithOctave
+                        note_name_ = note_filter(note.nameWithOctave, note_map)
                         note_text_ = note.lyric
                         # print("note_text1", text_)
                         # print("note_text_", note_text_)
@@ -126,6 +144,7 @@ def process(base_path, file_path):
 base_path = "/home/yyu479/espnet/egs2/ofuton_p_utagoe_db/svs1/"
 
 data = []
+phn_dict = set()
 data_eval = process(base_path, base_path + "dump/raw/eval/")
 data_dev = process(base_path, base_path + "dump/raw/org/dev/")
 data_tr_no_dev = process(base_path, base_path + "dump/raw/org/tr_no_dev/")
@@ -133,5 +152,12 @@ data = data_eval + data_dev + data_tr_no_dev
 
 with open("transcriptions.txt", "w") as f:
     for i in data:
+        f.writelines(i)
+        f.write("\n")
+
+phn_dict_sort = list(phn_dict)
+phn_dict_sort.sort()
+with open("dict.txt", "w") as f:
+    for i in phn_dict_sort:
         f.writelines(i)
         f.write("\n")

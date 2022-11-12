@@ -64,8 +64,50 @@ _finals = [
     "vn",
 ]
 
-
-symbols = _pause + _initials + _finals
+lang = "jp"
+if lang == "cn":
+    symbols = _pause + _initials + _finals
+elif lang == "jp":
+    symbols = [
+        "I",
+        "N",
+        "a",
+        "b",
+        "by",
+        "ch",
+        "cl",
+        "d",
+        "dy",
+        "e",
+        "f",
+        "g",
+        "gy",
+        "h",
+        "hy",
+        "i",
+        "j",
+        "k",
+        "ky",
+        "m",
+        "my",
+        "n",
+        "ny",
+        "o",
+        "p",
+        "py",
+        "r",
+        "ry",
+        "s",
+        "sh",
+        "t",
+        "ts",
+        "ty",
+        "u",
+        "v",
+        "w",
+        "y",
+        "z",
+    ]
 
 # Mappings from symbol to numeric ID and vice versa:
 _symbol_to_id = {s: i for i, s in enumerate(symbols)}
@@ -74,8 +116,12 @@ _id_to_symbol = {i: s for i, s in enumerate(symbols)}
 
 def label_to_ids(phones):
     # use lower letter
-    sequence = [_symbol_to_id[symbol.lower()] for symbol in phones]
+    if lang == "cn":
+        sequence = [_symbol_to_id[symbol.lower()] for symbol in phones]
+    elif lang == "jp":
+        sequence = [_symbol_to_id[symbol] for symbol in phones]
     return sequence
+
 
 def get_vocab_size():
     return len(symbols)
