@@ -64,7 +64,7 @@ _finals = [
     "vn",
 ]
 
-lang = "jp"
+lang = "cn"
 if lang == "cn":
     symbols = _pause + _initials + _finals
 elif lang == "jp":
