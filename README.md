@@ -1,59 +1,42 @@
 # Init
-Use VITS and Opencpop to develop singing voice synthesis; 
-Different from VISinger, It is just VITS without MAS and DurationPredictor.
+Unofficial Implement of VISinger
 
-# 本项目基于
+# Reference Repos
 https://github.com/jaywalnut310/vits
 
 https://github.com/MoonInTheRiver/DiffSinger
 
 https://wenet.org.cn/opencpop/
 
-# 数据预处理
+# Data Preprocess
 ```bash
 export PYTHONPATH=.
 ```
+
+Generate ../VISinger_data/label_vits_phn/XXX._label.npy|XXX._label_dur.npy|XXX_score.npy|XXX_score_dur.npy|XXX_pitch.npy|XXX_slurs.npy
 
 ```bash
 python prepare/data_vits_phn.py
 ```
 
-生成文件 ../VISinger_data/label_vits/XXX._label.npy|XXX_score.npy|XXX_pitch.npy|XXX_slurs.npy
-
-生成文件 filelists/vits_file.txt; 内容格式：wave path|label path|score path|pitch path|slurs path;
+Generate filelists/vits_file.txt
+Format: wave path|label path|label duration path|score path|score duration path|pitch path|slurs path;
 
 ```bash
 python prepare/preprocess.py
 ```
 
-# VITS训练
+# VISinger training
 
 ```bash
 python train.py -c configs/singing_base.json -m singing_base
 ```
 
-# 测试验证
-
-1,训练集生成验证:F0根据音频提取
+# Inference
 
 ```bash
-python vsinging_debug.py
+./infer.sh
 ```
-
-2,推理验证:F0根据规则生成
-
-```bash
-python vsinging_infer.py
-```
-
-3,完整歌曲合成（**使用release模型**）
-
-```bash
-python vsinging_song.py
-```
-
-4,F0的问题可以额外训练F0预测器,或者使用UTAU绘制pit曲线
-
 
 ![LOSS值](/resource/vising_loss.png)
 ![MEL谱](/resource/vising_mel.png)
