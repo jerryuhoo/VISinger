@@ -429,6 +429,7 @@ def train_and_evaluate(
                         )
                     except OSError:
                         pass
+
         global_step += 1
 
     if rank == 0:
@@ -437,7 +438,19 @@ def train_and_evaluate(
 
 def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, logger):
     generator.eval()
-
+    loss_disc_avg = 0
+    loss_gen_avg = 0
+    loss_fm_avg = 0
+    loss_mel_avg = 0
+    loss_dur_avg = 0
+    loss_pitch_avg = 0
+    ctc_loss_avg = 0
+    loss_kl_avg = 0
+    loss_gen_all_avg = 0
+    loss_disc_all_avg = 0
+    losses_gen_avg = []
+    losses_disc_r_avg = []
+    losses_disc_g_avg = []
     with torch.no_grad():
         for batch_idx, (
             phone,
@@ -474,7 +487,7 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                 gt_lf0,
                 pred_lf0,
                 ctc_loss,
-            ) = generator(
+            ) = generator.module.infer(
                 phone,
                 phone_lengths,
                 phone_dur,
@@ -486,127 +499,135 @@ def evaluate(hps, generator, discriminator, eval_loader, writer_eval, epoch, log
                 spec_lengths,
             )
 
-        y_hat_lengths = x_mask.sum([1, 2]).long() * hps.data.hop_length
+            y_hat_lengths = x_mask.sum([1, 2]).long() * hps.data.hop_length
 
-        mel = spec_to_mel_torch(
-            spec,
-            hps.data.filter_length,
-            hps.data.n_mel_channels,
-            hps.data.sampling_rate,
-            hps.data.mel_fmin,
-            hps.data.mel_fmax,
-        )
-        y_mel = commons.slice_segments(
-            mel, ids_slice, hps.train.segment_size // hps.data.hop_length
-        )
-        y_hat_mel = mel_spectrogram_torch(
-            y_hat.squeeze(1),
-            hps.data.filter_length,
-            hps.data.n_mel_channels,
-            hps.data.sampling_rate,
-            hps.data.hop_length,
-            hps.data.win_length,
-            hps.data.mel_fmin,
-            hps.data.mel_fmax,
-        )
-
-        wave = commons.slice_segments(
-            wave, ids_slice * hps.data.hop_length, hps.train.segment_size
-        )  # slice
-
-        # # remove else
-        # phone = phone[:1]
-        # phone_lengths = phone_lengths[:1]
-        # score = score[:1]
-        # pitch = pitch[:1]
-        # slurs = slurs[:1]
-
-        # spec = spec[:1]
-        # spec_lengths = spec_lengths[:1]
-
-        # wave = wave[:1]
-        # wave_lengths = wave_lengths[:1]
-
-        # Discriminator
-        y_d_hat_r, y_d_hat_g, _, _ = discriminator(wave, y_hat.detach())
-        with autocast(enabled=False):
-            loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
-                y_d_hat_r, y_d_hat_g
+            mel = spec_to_mel_torch(
+                spec,
+                hps.data.filter_length,
+                hps.data.n_mel_channels,
+                hps.data.sampling_rate,
+                hps.data.mel_fmin,
+                hps.data.mel_fmax,
             )
-            loss_disc_all = loss_disc
+            y_mel = commons.slice_segments(
+                mel, ids_slice, hps.train.segment_size // hps.data.hop_length
+            )
+            y_hat_mel = mel_spectrogram_torch(
+                y_hat.squeeze(1),
+                hps.data.filter_length,
+                hps.data.n_mel_channels,
+                hps.data.sampling_rate,
+                hps.data.hop_length,
+                hps.data.win_length,
+                hps.data.mel_fmin,
+                hps.data.mel_fmax,
+            )
 
-        with autocast(enabled=hps.train.fp16_run):
-            # Generator
-            y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = discriminator(wave, y_hat)
+            wave = commons.slice_segments(
+                wave, ids_slice * hps.data.hop_length, hps.train.segment_size
+            )  # slice
+
+            # Discriminator
+            y_d_hat_r, y_d_hat_g, _, _ = discriminator(wave, y_hat.detach())
             with autocast(enabled=False):
-                loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
-                loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
-                loss_fm = feature_loss(fmap_r, fmap_g)
-                loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                mse_loss = nn.MSELoss()
-                loss_dur = mse_loss(gt_logw, pred_logw)
-                loss_pitch = mse_loss(gt_lf0, pred_lf0)
-                loss_gen_all = (
-                    loss_gen
-                    + loss_fm
-                    + loss_mel
-                    + loss_kl
-                    + loss_dur
-                    + loss_pitch
-                    + ctc_loss
+                loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
+                    y_d_hat_r, y_d_hat_g
                 )
+                loss_disc_all = loss_disc
 
-                losses = [
-                    loss_disc,
-                    loss_gen,
-                    loss_fm,
-                    loss_mel,
-                    loss_dur,
-                    loss_pitch,
-                    ctc_loss,
-                ]
-                logger.info("Eval Epoch: {}".format(epoch))
-                # Amor For Tensorboard display
-                if loss_mel > 50:
-                    loss_mel = 50
-                if loss_kl > 5:
-                    loss_kl = 5
-                if loss_dur > 100:
-                    loss_dur = 100
-                # if loss_pitch > 100:
-                #     loss_pitch = 100
+            with autocast(enabled=hps.train.fp16_run):
+                # Generator
+                y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = discriminator(wave, y_hat)
+                with autocast(enabled=False):
+                    loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
+                    loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
+                    loss_fm = feature_loss(fmap_r, fmap_g)
+                    loss_gen, losses_gen = generator_loss(y_d_hat_g)
+                    mse_loss = nn.MSELoss()
+                    loss_dur = mse_loss(gt_logw, pred_logw)
+                    loss_pitch = mse_loss(gt_lf0, pred_lf0) * 0.05
+                    loss_gen_all = (
+                        loss_gen
+                        + loss_fm
+                        + loss_mel
+                        + loss_kl
+                        + loss_dur
+                        + loss_pitch
+                        + ctc_loss
+                    )
 
-                logger.info(
-                    f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f}"
-                )
-                logger.info(
-                    f"loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}, loss_dur={loss_dur:.3f}, loss_pitch={loss_pitch:.3f}, ctc_loss={ctc_loss:.3f}"
-                )
+                    loss_disc_avg += loss_disc
+                    loss_gen_avg += loss_gen
+                    loss_fm_avg += loss_fm
+                    loss_mel_avg += loss_mel
+                    loss_dur_avg += loss_dur
+                    loss_pitch_avg += loss_pitch
+                    ctc_loss_avg += ctc_loss
+                    loss_kl_avg += loss_kl
+                    loss_gen_all_avg += loss_gen_all
+                    loss_disc_all_avg += loss_disc_all
+                    losses_gen_avg = [item + losses_gen for item in losses_gen_avg]
+                    losses_disc_r_avg = [
+                        item + losses_disc_r for item in losses_disc_r_avg
+                    ]
+                    losses_disc_g_avg = [
+                        item + losses_disc_g for item in losses_disc_g_avg
+                    ]
 
-                scalar_dict = {
-                    "loss/g/total": loss_gen_all,
-                    "loss/d/total": loss_disc_all,
-                }
-                scalar_dict.update(
-                    {
-                        "loss/g/fm": loss_fm,
-                        "loss/g/mel": loss_mel,
-                        "loss/g/kl": loss_kl,
-                        "loss/g/dur": loss_dur,
-                        "loss/g/pitch": loss_pitch,
-                        "loss/g/ctc": ctc_loss,
-                    }
-                )
+        loss_disc_avg = loss_disc_avg / len(eval_loader)
+        loss_gen_avg = loss_gen_avg / len(eval_loader)
+        loss_fm_avg = loss_fm_avg / len(eval_loader)
+        loss_mel_avg = loss_mel_avg / len(eval_loader)
+        loss_dur_avg = loss_dur_avg / len(eval_loader)
+        loss_pitch_avg = loss_pitch_avg / len(eval_loader)
+        ctc_loss_avg = ctc_loss_avg / len(eval_loader)
+        loss_kl_avg = loss_kl_avg / len(eval_loader)
+        loss_gen_all_avg = loss_gen_all_avg / len(eval_loader)
+        loss_disc_all_avg = loss_disc_all_avg / len(eval_loader)
+        losses_gen_avg = [item / len(eval_loader) for item in losses_gen_avg]
+        losses_disc_r_avg = [item / len(eval_loader) for item in losses_disc_r_avg]
+        losses_disc_g_avg = [item / len(eval_loader) for item in losses_disc_g_avg]
 
-                scalar_dict.update(
-                    {"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)}
-                )
-                scalar_dict.update(
-                    {"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)}
-                )
-                scalar_dict.update(
-                    {"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g)}
-                )
+        logger.info("Eval Epoch: {}".format(epoch))
+        # Amor For Tensorboard display
+        if loss_mel_avg > 50:
+            loss_mel_avg = 50
+        # if loss_kl > 5:
+        #     loss_kl = 5
+        if loss_dur_avg > 100:
+            loss_dur_avg = 100
+
+        logger.info(
+            f"loss_disc={loss_disc_avg:.3f}, loss_gen={loss_gen_avg:.3f}, loss_fm={loss_fm_avg:.3f}"
+        )
+        logger.info(
+            f"loss_mel={loss_mel_avg:.3f}, loss_kl={loss_kl_avg:.3f}, loss_dur={loss_dur_avg:.3f}, loss_pitch={loss_pitch_avg:.3f}, ctc_loss={ctc_loss_avg:.3f}"
+        )
+
+        scalar_dict = {
+            "loss/g/total": loss_gen_all_avg,
+            "loss/d/total": loss_disc_all_avg,
+        }
+        scalar_dict.update(
+            {
+                "loss/g/fm": loss_fm_avg,
+                "loss/g/mel": loss_mel_avg,
+                "loss/g/kl": loss_kl_avg,
+                "loss/g/dur": loss_dur_avg,
+                "loss/g/pitch": loss_pitch_avg,
+                "loss/g/ctc": ctc_loss_avg,
+            }
+        )
+
+        scalar_dict.update(
+            {"loss/g/{}".format(i): v for i, v in enumerate(losses_gen_avg)}
+        )
+        scalar_dict.update(
+            {"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r_avg)}
+        )
+        scalar_dict.update(
+            {"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g_avg)}
+        )
 
     image_dict = {
         f"gen/mel_{global_step}": utils.plot_spectrogram_to_numpy(

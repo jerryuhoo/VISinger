@@ -1,3 +1,6 @@
+echo "Generating"
+python vsinging_infer.py
+
 echo "Scoring"
 
 

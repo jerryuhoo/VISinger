@@ -1,0 +1,1 @@
+nohup python train.py -c configs/singing_base.json -m singing_base &

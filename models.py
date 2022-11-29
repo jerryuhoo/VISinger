@@ -945,7 +945,17 @@ class SynthesizerTrn(nn.Module):
         )
 
     def infer(
-        self, phone, phone_lengths, score, score_dur, slurs, sid=None, max_len=None
+        self,
+        phone,
+        phone_lengths,
+        phone_dur,
+        score,
+        score_dur,
+        pitch,
+        slurs,
+        y,
+        y_lengths,
+        sid=None,
     ):
         x, x_mask = self.enc_p(phone, score, score_dur, slurs, phone_lengths)
         if self.n_speakers > 0:
@@ -953,11 +963,13 @@ class SynthesizerTrn(nn.Module):
         else:
             g = None
 
-        logw = self.dp(x, x_mask, score_dur, g=g)
-        # logw = torch.mul(logw.squeeze(1), score_dur).unsqueeze(1)
-        w = (logw * x_mask).type(torch.LongTensor).to(x.device).squeeze(1)
-        x_frame, x_lengths = self.lr(x, w, phone_lengths)
-        x_frame = x_frame.to(x.device)
+        # duration
+        w = phone_dur.unsqueeze(1)
+        gt_logw = w * x_mask
+        pred_logw = self.dp(x, x_mask, score_dur, g=g)
+        # pred_logw_ = (pred_logw * x_mask).type(torch.LongTensor).to(x.device).squeeze(1)
+        x_frame, x_lengths = self.lr(x, phone_dur, phone_lengths)
+
         x_mask = torch.unsqueeze(
             commons.sequence_mask(x_lengths, x_frame.size(2)), 1
         ).to(x.dtype)
@@ -974,16 +986,41 @@ class SynthesizerTrn(nn.Module):
         pe[:, :, 1::2] = torch.cos(position * div_term)
         pe = pe.transpose(1, 2).to(x_frame.device)
         x_frame = x_frame + pe
+
         pred_pitch, pitch_embedding = self.pitch_net(x_frame, x_mask)
+        lf0 = torch.unsqueeze(pred_pitch, -1)
+        gt_lf0 = pitch.to(torch.float32)
+        pred_lf0 = lf0.squeeze()
 
         x_frame = self.frame_prior_net(x_frame, pitch_embedding, x_mask)
         x_frame = x_frame.transpose(1, 2)
         m_p, logs_p = self.project(x_frame, x_mask)
 
+        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
+
+        log_probs = self.phonemes_predictor(z, y_mask)
+
+        ctc_loss = self.ctc_loss(log_probs, phone, y_lengths, phone_lengths)
+        z_p_ori = self.flow(z, y_mask, g=g)
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * 0.3
         z = self.flow(z_p, x_mask, g=g, reverse=True)
-        o = self.dec((z * x_mask)[:, :, :max_len], g=g)
-        return o, x_mask, (z, z_p, m_p, logs_p)
+
+        z_slice, ids_slice = commons.rand_slice_segments(
+            z, y_lengths, self.segment_size
+        )
+        o = self.dec(z_slice, g=g)
+        return (
+            o,
+            ids_slice,
+            x_mask,
+            y_mask,
+            (z, z_p_ori, m_p, logs_p, m_q, logs_q),
+            gt_logw,
+            pred_logw,
+            gt_lf0,
+            pred_lf0,
+            ctc_loss,
+        )
 
     def voice_conversion(self, y, y_lengths):
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=None)
@@ -1000,6 +1037,7 @@ class Synthesizer(nn.Module):
 
     def __init__(
         self,
+        n_vocab,
         spec_channels,
         segment_size,
         inter_channels,
@@ -1041,6 +1079,7 @@ class Synthesizer(nn.Module):
         self.gin_channels = gin_channels
 
         self.enc_p = TextEncoder(
+            n_vocab,
             inter_channels,
             hidden_channels,
             filter_channels,
@@ -1059,20 +1098,57 @@ class Synthesizer(nn.Module):
             upsample_kernel_sizes,
             gin_channels=gin_channels,
         )
+        self.enc_q = PosteriorEncoder(
+            spec_channels,
+            inter_channels,
+            hidden_channels,
+            5,
+            1,
+            16,
+            gin_channels=gin_channels,
+        )
         self.flow = ResidualCouplingBlock(
             inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels
         )
 
+        self.dp = DurationPredictor(
+            hidden_channels, 256, 3, 0.5, gin_channels=gin_channels
+        )
+        self.project = Projection(hidden_channels, inter_channels)
+        self.lr = LengthRegulator()
+        self.frame_prior_net = FramePriorNet(
+            n_vocab,
+            inter_channels,
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout,
+        )
+        self.pitch_net = PitchPredictor(
+            n_vocab,
+            inter_channels,
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout,
+        )
+        self.phonemes_predictor = PhonemesPredictor(
+            n_vocab,
+            inter_channels,
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout,
+        )
+
     def infer(
-        self,
-        phone,
-        phone_lengths,
-        score,
-        score_dur,
-        pitch,
-        slurs,
-        sid=None,
-        max_len=None,
+        self, phone, phone_lengths, score, score_dur, slurs, sid=None, max_len=None
     ):
         x, x_mask = self.enc_p(phone, score, score_dur, slurs, phone_lengths)
         if self.n_speakers > 0:
@@ -1107,7 +1183,7 @@ class Synthesizer(nn.Module):
         x_frame = x_frame.transpose(1, 2)
         m_p, logs_p = self.project(x_frame, x_mask)
 
-        z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * 1
+        z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * 0.3
         z = self.flow(z_p, x_mask, g=g, reverse=True)
         o = self.dec((z * x_mask)[:, :, :max_len], g=g)
         return o, x_mask, (z, z_p, m_p, logs_p)

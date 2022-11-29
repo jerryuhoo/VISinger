@@ -7,7 +7,7 @@ from time import *
 
 import torch
 import utils
-from models import SynthesizerTrn
+from models import Synthesizer
 from prepare.data_vits import SingInput
 from prepare.data_vits import FeatureInput
 from prepare.phone_map import get_vocab_size
@@ -25,7 +25,17 @@ hps = utils.get_hparams_from_file("./configs/singing_base.json")
 
 vocab_size = get_vocab_size()
 
-net_g = SynthesizerTrn(
+model_path = "./logs/singing_base/"
+saved_models = os.listdir(model_path)
+iter_nums = []
+for i in range(len(saved_models)):
+    if os.path.splitext(saved_models[i])[1] == ".pth" and "G" in saved_models[i]:
+        iter_nums.append(int(os.path.splitext(saved_models[i])[0][2:]))
+iter_nums = sorted(iter_nums, reverse=True)
+
+print("start infering (G_" + str(iter_nums[0]) + ".pth)")
+
+net_g = Synthesizer(
     vocab_size,
     hps.data.filter_length // 2 + 1,
     hps.train.segment_size // hps.data.hop_length,
@@ -35,7 +45,10 @@ net_g = SynthesizerTrn(
 if use_cuda:
     net_g = net_g.cuda()
 
-_ = utils.load_checkpoint("./logs/singing_base/G_150000.pth", net_g, None)
+_ = utils.load_checkpoint(
+    "./logs/singing_base/G_" + str(iter_nums[0]) + ".pth", net_g, None
+)
+
 net_g.eval()
 # net_g.remove_weight_norm()
 
