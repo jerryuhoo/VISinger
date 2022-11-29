@@ -64,9 +64,6 @@ featur_pit = featur_pit[: len(labels_uvs)]
 featur_pit_uv = featur_pit * labels_uvs
 
 uv = featur_pit == 0
-print("uv", uv)
-print("bbb", np.where(uv)[0])
-print("ccc", np.where(~uv)[0])
 featur_pit_intp = np.copy(featur_pit)
 featur_pit_intp[uv] = np.interp(np.where(uv)[0], np.where(~uv)[0], featur_pit[~uv])
 # plot
