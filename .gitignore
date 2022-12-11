@@ -5,7 +5,6 @@ filelists/singing_valid.txt
 filelists/vits_file.txt
 logs
 singing_out
-*.wav
 */*_res
 *.zip
 nohup.out

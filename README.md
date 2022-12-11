@@ -8,6 +8,8 @@ https://github.com/MoonInTheRiver/DiffSinger
 
 https://wenet.org.cn/opencpop/
 
+https://github.com/PlayVoice/VI-SVS
+
 # Data Preprocess
 ```bash
 export PYTHONPATH=.
@@ -32,22 +34,44 @@ python prepare/preprocess.py
 python train.py -c configs/singing_base.json -m singing_base
 ```
 
+or
+
+```bash
+./train.sh
+```
+
 # Inference
 
 ```bash
-./infer.sh
+./evaluate_score.sh
 ```
 
-![LOSS值](/resource/vising_loss.png)
-![MEL谱](/resource/vising_mel.png)
+![LOSS](/resource/vising_loss.png)
+![MEL](/resource/vising_mel.png)
+
+# Samples
 
 <audio id="audio" controls="" preload="none">
-      <source id="wav" src="/resource/vising_sample.wav">
+      <source id="wav" src="/resource/2005000151.wav">
 </audio>
 
-# 样例音频
+<audio id="audio" controls="" preload="none">
+      <source id="wav" src="/resource/2005000152.wav">
+</audio>
 
-[vits_singing_样例.wav](/resource/vising_sample.wav)
+<audio id="audio" controls="" preload="none">
+      <source id="wav" src="/resource/2005000186.wav">
+</audio>
 
-# AI修复
-https://github.com/brentspell/hifi-gan-bwe
+<audio id="audio" controls="" preload="none">
+      <source id="wav" src="/resource/2005000187.wav">
+</audio>
+
+<audio id="audio" controls="" preload="none">
+      <source id="wav" src="/resource/2005000268.wav">
+</audio>
+
+
+
+
+
